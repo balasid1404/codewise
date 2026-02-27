@@ -30,7 +30,7 @@ def main():
     # Initialize with path to your codebase
     localizer = FaultLocalizer(
         codebase_path="./sample-repo",
-        use_llm=True  # Set False to skip LLM re-ranking
+        use_llm=False  # Set True if you have AWS credentials configured
     )
 
     # Index the codebase (do once, cache results in production)

@@ -4,6 +4,7 @@ import os
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from fault_localizer_prod import FaultLocalizerProd
+from indexer.s3_loader import S3CodebaseLoader
 
 app = FastAPI(title="Fault Localization API")
 
@@ -13,9 +14,12 @@ localizer = FaultLocalizerProd(
     use_llm=os.getenv("USE_LLM", "true").lower() == "true"
 )
 
+s3_loader = S3CodebaseLoader(region=os.getenv("AWS_REGION", "us-east-1"))
+
 
 class IndexRequest(BaseModel):
-    codebase_path: str
+    codebase_path: str = None
+    s3_uri: str = None  # s3://bucket/prefix/
     workers: int = 4
 
 
@@ -47,7 +51,16 @@ class LocalizeResponse(BaseModel):
 @app.post("/index")
 def index_codebase(request: IndexRequest):
     try:
-        count = localizer.index_codebase(request.codebase_path, request.workers)
+        if request.s3_uri:
+            # Download from S3
+            local_path = s3_loader.download(request.s3_uri)
+            count = localizer.index_codebase(str(local_path), request.workers)
+            s3_loader.cleanup(local_path)
+        elif request.codebase_path:
+            count = localizer.index_codebase(request.codebase_path, request.workers)
+        else:
+            raise HTTPException(status_code=400, detail="Provide codebase_path or s3_uri")
+        
         return {"indexed": count, "status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

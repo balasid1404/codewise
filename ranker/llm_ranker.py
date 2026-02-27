@@ -5,8 +5,8 @@ from extractors.base import ExtractedError
 
 
 class LLMRanker:
-    def __init__(self, model_id: str = "anthropic.claude-3-5-sonnet-20241022-v2:0"):
-        self.client = boto3.client("bedrock-runtime")
+    def __init__(self, model_id: str = "anthropic.claude-3-5-sonnet-20241022-v2:0", region: str = "us-east-1"):
+        self.client = boto3.client("bedrock-runtime", region_name=region)
         self.model_id = model_id
 
     def rank_and_explain(
