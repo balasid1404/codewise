@@ -11,6 +11,18 @@ services:
       - "9200:9200"
     volumes:
       - opensearch-data:/usr/share/opensearch/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9200/_cluster/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
 
   fault-localizer:
     build: .
@@ -19,9 +31,16 @@ services:
     environment:
       - OPENSEARCH_HOST=opensearch
       - OPENSEARCH_PORT=9200
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
       - USE_LLM=false
+      - AWS_REGION=us-east-1
     depends_on:
-      - opensearch
+      opensearch:
+        condition: service_healthy
+      redis:
+        condition: service_started
 
 volumes:
   opensearch-data:
+  redis-data:
