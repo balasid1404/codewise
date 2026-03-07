@@ -2,7 +2,10 @@
 
 import os
 import uuid
+from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional
 from contextlib import asynccontextmanager
@@ -56,6 +59,17 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Fault Localization API", lifespan=lifespan)
+
+# Serve UI
+STATIC_DIR = Path(__file__).parent / "static"
+
+
+@app.get("/")
+async def root():
+    return FileResponse(STATIC_DIR / "index.html")
+
+
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 # Request/Response Models

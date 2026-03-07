@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CodeWise — Fault Localization</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f1117; color: #e1e4e8; min-height: 100vh; }
+        .container { max-width: 960px; margin: 0 auto; padding: 24px; }
+        h1 { font-size: 1.8rem; font-weight: 600; margin-bottom: 4px; color: #58a6ff; }
+        .subtitle { color: #8b949e; margin-bottom: 32px; font-size: 0.95rem; }
+        .status-bar { display: flex; gap: 16px; margin-bottom: 32px; padding: 12px 16px; background: #161b22; border-radius: 8px; border: 1px solid #30363d; font-size: 0.85rem; }
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+        .status-dot.green { background: #3fb950; }
+        .status-dot.red { background: #f85149; }
+        .status-dot.yellow { background: #d29922; }
+        .tabs { display: flex; gap: 0; margin-bottom: 24px; border-bottom: 1px solid #30363d; }
+        .tab { padding: 10px 20px; cursor: pointer; color: #8b949e; border-bottom: 2px solid transparent; transition: all 0.2s; font-size: 0.9rem; }
+        .tab:hover { color: #e1e4e8; }
+        .tab.active { color: #58a6ff; border-bottom-color: #58a6ff; }
+        .panel { display: none; }
+        .panel.active { display: block; }
+        textarea { width: 100%; min-height: 180px; background: #0d1117; border: 1px solid #30363d; border-radius: 8px; color: #e1e4e8; padding: 14px; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.85rem; resize: vertical; outline: none; }
+        textarea:focus { border-color: #58a6ff; }
+        .form-group { margin-bottom: 16px; }
+        label { display: block; margin-bottom: 6px; font-size: 0.85rem; color: #8b949e; }
+        input[type="text"], input[type="number"] { width: 100%; padding: 10px 14px; background: #0d1117; border: 1px solid #30363d; border-radius: 8px; color: #e1e4e8; font-size: 0.9rem; outline: none; }
+        input:focus { border-color: #58a6ff; }
+        .btn { padding: 10px 24px; border: none; border-radius: 8px; cursor: pointer; font-size: 0.9rem; font-weight: 500; transition: all 0.2s; }
+        .btn-primary { background: #238636; color: #fff; }
+        .btn-primary:hover { background: #2ea043; }
+        .btn-primary:disabled { background: #21262d; color: #484f58; cursor: not-allowed; }
+        .btn-secondary { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; }
+        .btn-secondary:hover { background: #30363d; }
+        .results { margin-top: 24px; }
+        .result-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; margin-bottom: 12px; }
+        .result-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+        .result-name { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.9rem; color: #58a6ff; }
+        .result-file { font-size: 0.8rem; color: #8b949e; margin-bottom: 8px; }
+        .confidence { padding: 3px 10px; border-radius: 12px; font-size: 0.75rem; font-weight: 600; }
+        .confidence.high { background: #0d4429; color: #3fb950; }
+        .confidence.medium { background: #3d2e00; color: #d29922; }
+        .confidence.low, .confidence.very_low { background: #3d1e20; color: #f85149; }
+        .result-reason { font-size: 0.85rem; color: #c9d1d9; line-height: 1.5; }
+        .result-sig { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.8rem; color: #7ee787; background: #0d1117; padding: 8px 12px; border-radius: 6px; margin: 8px 0; overflow-x: auto; }
+        .job-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 14px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
+        .job-status { padding: 3px 10px; border-radius: 12px; font-size: 0.75rem; font-weight: 600; }
+        .job-status.completed { background: #0d4429; color: #3fb950; }
+        .job-status.running { background: #0c2d6b; color: #58a6ff; }
+        .job-status.failed { background: #3d1e20; color: #f85149; }
+        .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #30363d; border-top-color: #58a6ff; border-radius: 50%; animation: spin 0.8s linear infinite; margin-right: 8px; vertical-align: middle; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .loading { color: #8b949e; font-size: 0.9rem; padding: 16px 0; }
+</style>
+</head>
+<body>
+<div class="container">
+    <h1>🔍 CodeWise</h1>
+    <p class="subtitle">AI-Powered Fault Localization</p>
+
+    <div class="status-bar" id="statusBar">
+        <span><span class="status-dot" id="healthDot"></span> <span id="healthText">Checking...</span></span>
+        <span><span class="status-dot" id="osDot"></span> OpenSearch: <span id="osText">...</span></span>
+        <span>Entities: <span id="entityCount">...</span></span>
+    </div>
+
+    <div class="tabs">
+        <div class="tab active" data-panel="localize">Localize Fault</div>
+        <div class="tab" data-panel="indexPanel">Index Codebase</div>
+        <div class="tab" data-panel="jobsPanel">Jobs</div>
+    </div>
+
+    <!-- Localize Panel -->
+    <div class="panel active" id="localize">
+        <div class="form-group">
+            <label>Paste your stack trace or error message</label>
+            <textarea id="errorText" placeholder="Traceback (most recent call last):&#10;  File &quot;api.py&quot;, line 45, in lifespan&#10;    ...&#10;TypeError: something went wrong"></textarea>
+        </div>
+        <div class="form-group" style="display:flex;gap:12px;align-items:end;">
+            <div style="flex:0 0 120px;">
+                <label>Top K</label>
+                <input type="number" id="topK" value="5" min="1" max="20">
+            </div>
+            <button class="btn btn-primary" id="localizeBtn" onclick="localizeFault()">Localize</button>
+        </div>
+        <div class="results" id="localizeResults"></div>
+    </div>
+
+    <!-- Index Panel -->
+    <div class="panel" id="indexPanel">
+        <div class="form-group">
+            <label>S3 URI</label>
+            <input type="text" id="s3Uri" placeholder="s3://fault-loc-codebase-650251724071/my-project/">
+        </div>
+        <div class="form-group" style="display:flex;gap:12px;align-items:end;">
+            <div style="flex:0 0 120px;">
+                <label>Workers</label>
+                <input type="number" id="workers" value="2" min="1" max="8">
+            </div>
+            <button class="btn btn-primary" onclick="startIndex()">Start Indexing</button>
+        </div>
+        <div class="results" id="indexResults"></div>
+    </div>
+
+    <!-- Jobs Panel -->
+    <div class="panel" id="jobsPanel">
+        <button class="btn btn-secondary" onclick="loadJobs()" style="margin-bottom:16px;">Refresh</button>
+        <div id="jobsList"></div>
+    </div>
+</div>
+
+<script>
+const API = '';
+
+// Tabs
+document.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+        tab.classList.add('active');
+        document.getElementById(tab.dataset.panel).classList.add('active');
+    });
+});
+
+// Health check
+async function checkHealth() {
+    try {
+        const r = await fetch(`${API}/health`);
+        const d = await r.json();
+        const hDot = document.getElementById('healthDot');
+        const oDot = document.getElementById('osDot');
+        hDot.className = 'status-dot ' + (d.status === 'healthy' ? 'green' : 'yellow');
+        oDot.className = 'status-dot ' + (d.opensearch === 'connected' ? 'green' : 'red');
+        document.getElementById('healthText').textContent = d.status;
+        document.getElementById('osText').textContent = d.opensearch;
+
+        const s = await fetch(`${API}/stats`);
+        const sd = await s.json();
+        document.getElementById('entityCount').textContent = sd.indexed_entities ?? '—';
+    } catch(e) {
+        document.getElementById('healthDot').className = 'status-dot red';
+        document.getElementById('healthText').textContent = 'unreachable';
+    }
+}
+checkHealth();
+setInterval(checkHealth, 30000);
+
+// Localize
+async function localizeFault() {
+    const btn = document.getElementById('localizeBtn');
+    const out = document.getElementById('localizeResults');
+    const text = document.getElementById('errorText').value.trim();
+    if (!text) return;
+
+    btn.disabled = true;
+    out.innerHTML = '<div class="loading"><span class="spinner"></span>Analyzing stack trace with AI...</div>';
+
+    try {
+        const r = await fetch(`${API}/localize`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ error_text: text, top_k: parseInt(document.getElementById('topK').value) })
+        });
+        const d = await r.json();
+        if (d.detail) { out.innerHTML = `<div class="result-card" style="border-color:#f85149;">${d.detail}</div>`; return; }
+
+        out.innerHTML = d.results.map((r, i) => `
+            <div class="result-card">
+                <div class="result-header">
+                    <span class="result-name">#${i+1} ${r.full_name || r.name}</span>
+                    <span class="confidence ${r.confidence_label || (r.confidence > 0.7 ? 'high' : r.confidence > 0.4 ? 'medium' : 'low')}">${(r.confidence * 100).toFixed(0)}%</span>
+                </div>
+                <div class="result-file">📄 ${r.file_path.replace(/^\/tmp\/[^/]+\//, '')} : ${r.start_line}–${r.end_line}</div>
+                <div class="result-sig">${r.signature}</div>
+                <div class="result-reason">${r.reason}</div>
+            </div>
+        `).join('') + (d.cached ? '<div style="color:#8b949e;font-size:0.8rem;margin-top:8px;">⚡ Cached result</div>' : '');
+    } catch(e) {
+        out.innerHTML = `<div class="result-card" style="border-color:#f85149;">Error: ${e.message}</div>`;
+    } finally { btn.disabled = false; }
+}
+
+// Index
+async function startIndex() {
+    const out = document.getElementById('indexResults');
+    const uri = document.getElementById('s3Uri').value.trim();
+    if (!uri) return;
+
+    out.innerHTML = '<div class="loading"><span class="spinner"></span>Starting indexing job...</div>';
+    try {
+        const r = await fetch(`${API}/index`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ s3_uri: uri, workers: parseInt(document.getElementById('workers').value) })
+        });
+        const d = await r.json();
+        if (d.detail) { out.innerHTML = `<div class="result-card" style="border-color:#f85149;">${d.detail}</div>`; return; }
+        out.innerHTML = `<div class="result-card"><strong>Job ${d.job_id}</strong> — ${d.status}<br><span style="color:#8b949e">${d.message}</span></div>`;
+        pollJob(d.job_id, out);
+    } catch(e) {
+        out.innerHTML = `<div class="result-card" style="border-color:#f85149;">Error: ${e.message}</div>`;
+    }
+}
+
+async function pollJob(id, out) {
+    const poll = setInterval(async () => {
+        try {
+            const r = await fetch(`${API}/index/${id}`);
+            const d = await r.json();
+            out.innerHTML = `<div class="result-card">
+                <strong>Job ${d.job_id}</strong> — <span class="job-status ${d.status}">${d.status}</span>
+                <br>Entities: ${d.entities_indexed} | Progress: ${(d.progress * 100).toFixed(0)}%
+                ${d.error ? '<br><span style="color:#f85149;">'+d.error+'</span>' : ''}
+            </div>`;
+            if (d.status === 'completed' || d.status === 'failed') { clearInterval(poll); checkHealth(); }
+        } catch(e) { clearInterval(poll); }
+    }, 3000);
+}
+
+// Jobs
+async function loadJobs() {
+    const out = document.getElementById('jobsList');
+    out.innerHTML = '<div class="loading"><span class="spinner"></span>Loading...</div>';
+    try {
+        const r = await fetch(`${API}/index/jobs/list`);
+        const d = await r.json();
+        if (!d.jobs || d.jobs.length === 0) { out.innerHTML = '<div style="color:#8b949e;">No jobs yet.</div>'; return; }
+        out.innerHTML = d.jobs.map(j => `
+            <div class="job-card">
+                <div>
+                    <strong>${j.job_id}</strong>
+                    <div style="color:#8b949e;font-size:0.8rem;">${j.source || ''} — ${j.entities_indexed ?? 0} entities</div>
+                </div>
+                <span class="job-status ${j.status}">${j.status}</span>
+            </div>
+        `).join('');
+    } catch(e) {
+        out.innerHTML = `<div style="color:#f85149;">Error: ${e.message}</div>`;
+    }
+}
+</script>
+</body>
+</html>
