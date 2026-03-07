@@ -22,7 +22,7 @@ class ScalableUIMapper:
 
     def _ensure_index(self):
         """Create vocabulary index if not exists."""
-        if not self.client.indices.exists(self.VOCAB_INDEX):
+        if not self.client.indices.exists(index=self.VOCAB_INDEX):
             self.client.indices.create(
                 index=self.VOCAB_INDEX,
                 body={

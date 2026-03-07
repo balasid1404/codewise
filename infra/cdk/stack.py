@@ -64,11 +64,11 @@ class FaultLocalizationStack(Stack):
 
         es_container = es_task_def.add_container(
             "elasticsearch",
-            image=ecs.ContainerImage.from_registry("docker.elastic.co/elasticsearch/elasticsearch:8.12.0"),
+            image=ecs.ContainerImage.from_registry("opensearchproject/opensearch:2.11.0"),
             environment={
                 "discovery.type": "single-node",
-                "xpack.security.enabled": "false",
-                "ES_JAVA_OPTS": "-Xms384m -Xmx384m",
+                "DISABLE_SECURITY_PLUGIN": "true",
+                "OPENSEARCH_JAVA_OPTS": "-Xms384m -Xmx384m",
             },
             logging=ecs.LogDrivers.aws_logs(
                 stream_prefix="elasticsearch",
@@ -121,7 +121,6 @@ class FaultLocalizationStack(Stack):
         )
 
         # --- App Fargate Service with ALB ---
-        # Using placeholder nginx image until GitHub Actions pushes the real image
         fargate_service = ecs_patterns.ApplicationLoadBalancedFargateService(
             self, "FaultLocService",
             cluster=cluster,
@@ -130,8 +129,8 @@ class FaultLocalizationStack(Stack):
             desired_count=1,
             assign_public_ip=True,
             task_image_options=ecs_patterns.ApplicationLoadBalancedTaskImageOptions(
-                image=ecs.ContainerImage.from_registry("nginx:alpine"),
-                container_port=80,
+                image=ecs.ContainerImage.from_ecr_repository(ecr_repo, tag="latest"),
+                container_port=8080,
                 task_role=task_role,
                 environment={
                     "OPENSEARCH_HOST": "elasticsearch.faultloc.local",
@@ -149,8 +148,12 @@ class FaultLocalizationStack(Stack):
         )
 
         fargate_service.target_group.configure_health_check(
-            path="/",
+            path="/health",
             healthy_http_codes="200",
+            interval=Duration.seconds(60),
+            timeout=Duration.seconds(10),
+            healthy_threshold_count=2,
+            unhealthy_threshold_count=5,
         )
 
         scaling = fargate_service.service.auto_scale_task_count(min_capacity=1, max_capacity=2)

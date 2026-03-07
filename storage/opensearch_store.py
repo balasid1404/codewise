@@ -18,7 +18,7 @@ class OpenSearchStore(VectorStore):
         self._ensure_index()
 
     def _ensure_index(self):
-        if not self.client.indices.exists(self.INDEX_NAME):
+        if not self.client.indices.exists(index=self.INDEX_NAME):
             self.client.indices.create(
                 index=self.INDEX_NAME,
                 body={
@@ -84,7 +84,7 @@ class OpenSearchStore(VectorStore):
         if actions:
             helpers.bulk(self.client, actions)
 
-        self.client.indices.refresh(self.INDEX_NAME)
+        self.client.indices.refresh(index=self.INDEX_NAME)
         return len(entities)
 
     def search_bm25(self, query: str, top_k: int = 100) -> list[tuple[CodeEntity, float]]:

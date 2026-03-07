@@ -16,7 +16,7 @@ class IncrementalIndexer:
 
     def _ensure_index(self):
         """Create hash tracking index."""
-        if not self.client.indices.exists(self.index_name):
+        if not self.client.indices.exists(index=self.index_name):
             self.client.indices.create(
                 index=self.index_name,
                 body={
