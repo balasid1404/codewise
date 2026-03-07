@@ -5,7 +5,7 @@ from extractors.base import ExtractedError
 
 
 class LLMRanker:
-    def __init__(self, model_id: str = "us.anthropic.claude-sonnet-4-5-20250929-v1:0", region: str = "us-east-1"):
+    def __init__(self, model_id: str = "amazon.nova-pro-v1:0", region: str = "us-east-1"):
         self.client = boto3.client("bedrock-runtime", region_name=region)
         self.model_id = model_id
 
@@ -17,18 +17,18 @@ class LLMRanker:
     ) -> list[dict]:
         prompt = self._build_prompt(error, candidates)
 
-        response = self.client.invoke_model(
+        body = {
+            "messages": [{"role": "user", "content": [{"text": prompt}]}],
+            "inferenceConfig": {"maxTokens": 2000}
+        }
+
+        response = self.client.converse(
             modelId=self.model_id,
-            body=json.dumps({
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": 2000,
-                "messages": [{"role": "user", "content": prompt}]
-            })
+            messages=body["messages"],
+            inferenceConfig=body["inferenceConfig"]
         )
 
-        result = json.loads(response["body"].read())
-        content = result["content"][0]["text"]
-
+        content = response["output"]["message"]["content"][0]["text"]
         return self._parse_response(content, candidates, top_k)
 
     def _build_prompt(self, error: ExtractedError, candidates: list[tuple[CodeEntity, float]]) -> str:

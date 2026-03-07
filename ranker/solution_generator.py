@@ -9,7 +9,7 @@ from indexer.entities import CodeEntity
 class SolutionGenerator:
     """Analyzes fault candidates and generates concrete fix suggestions."""
 
-    def __init__(self, model_id: str = "us.anthropic.claude-sonnet-4-5-20250929-v1:0", region: str = "us-east-1"):
+    def __init__(self, model_id: str = "amazon.nova-pro-v1:0", region: str = "us-east-1"):
         self.client = boto3.client("bedrock-runtime", region_name=region)
         self.model_id = model_id
 
@@ -35,17 +35,13 @@ class SolutionGenerator:
         
         prompt = self._build_solution_prompt(error_description, candidates, file_contents)
         
-        response = self.client.invoke_model(
+        response = self.client.converse(
             modelId=self.model_id,
-            body=json.dumps({
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": 4000,
-                "messages": [{"role": "user", "content": prompt}]
-            })
+            messages=[{"role": "user", "content": [{"text": prompt}]}],
+            inferenceConfig={"maxTokens": 4000}
         )
         
-        result = json.loads(response["body"].read())
-        content = result["content"][0]["text"]
+        content = response["output"]["message"]["content"][0]["text"]
         
         return self._parse_solution(content)
 
