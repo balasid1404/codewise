@@ -124,8 +124,8 @@ class FaultLocalizationStack(Stack):
         fargate_service = ecs_patterns.ApplicationLoadBalancedFargateService(
             self, "FaultLocService",
             cluster=cluster,
-            cpu=512,
-            memory_limit_mib=1024,
+            cpu=1024,
+            memory_limit_mib=6144,
             desired_count=1,
             assign_public_ip=True,
             task_image_options=ecs_patterns.ApplicationLoadBalancedTaskImageOptions(
