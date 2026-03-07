@@ -9,7 +9,7 @@ from indexer.entities import CodeEntity
 class SolutionGenerator:
     """Analyzes fault candidates and generates concrete fix suggestions."""
 
-    def __init__(self, model_id: str = "us.anthropic.claude-sonnet-4-20250514-v1:0", region: str = "us-east-1"):
+    def __init__(self, model_id: str = "us.anthropic.claude-sonnet-4-5-20250929-v1:0", region: str = "us-east-1"):
         self.client = boto3.client("bedrock-runtime", region_name=region)
         self.model_id = model_id
 
