@@ -2,8 +2,9 @@
 
 import os
 import uuid
+import tempfile
 from pathlib import Path
-from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Request, BackgroundTasks, UploadFile, File, Form
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -245,6 +246,46 @@ async def localize_from_image(request: ImageLocalizeRequest):
 
     try:
         results = localizer.localize_from_image(request.image_path, request.top_k)
+
+        locations = []
+        for r in results:
+            entity = r["entity"]
+            confidence = r.get("confidence", r.get("score", 0))
+            locations.append(FaultLocation(
+                name=entity.name,
+                full_name=entity.full_name,
+                file_path=entity.file_path,
+                start_line=entity.start_line,
+                end_line=entity.end_line,
+                signature=entity.signature,
+                confidence=confidence,
+                confidence_label=_get_confidence_label(confidence),
+                reason=r.get("reason", "")
+            ))
+
+        return LocalizeResponse(results=locations, cached=False)
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/localize/image/upload", response_model=LocalizeResponse)
+async def localize_from_image_upload(file: UploadFile = File(...), top_k: int = Form(5)):
+    """Localize fault from uploaded screenshot."""
+    if not localizer:
+        raise HTTPException(status_code=503, detail="OpenSearch not available")
+
+    try:
+        suffix = Path(file.filename).suffix or ".png"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            content = await file.read()
+            tmp.write(content)
+            tmp_path = tmp.name
+
+        try:
+            results = localizer.localize_from_image(tmp_path, top_k)
+        finally:
+            os.unlink(tmp_path)
 
         locations = []
         for r in results:

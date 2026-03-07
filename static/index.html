@@ -10,12 +10,12 @@
         .container { max-width: 960px; margin: 0 auto; padding: 24px; }
         h1 { font-size: 1.8rem; font-weight: 600; margin-bottom: 4px; color: #58a6ff; }
         .subtitle { color: #8b949e; margin-bottom: 32px; font-size: 0.95rem; }
-        .status-bar { display: flex; gap: 16px; margin-bottom: 32px; padding: 12px 16px; background: #161b22; border-radius: 8px; border: 1px solid #30363d; font-size: 0.85rem; }
+        .status-bar { display: flex; gap: 16px; margin-bottom: 32px; padding: 12px 16px; background: #161b22; border-radius: 8px; border: 1px solid #30363d; font-size: 0.85rem; flex-wrap: wrap; }
         .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
         .status-dot.green { background: #3fb950; }
         .status-dot.red { background: #f85149; }
         .status-dot.yellow { background: #d29922; }
-        .tabs { display: flex; gap: 0; margin-bottom: 24px; border-bottom: 1px solid #30363d; }
+        .tabs { display: flex; gap: 0; margin-bottom: 24px; border-bottom: 1px solid #30363d; flex-wrap: wrap; }
         .tab { padding: 10px 20px; cursor: pointer; color: #8b949e; border-bottom: 2px solid transparent; transition: all 0.2s; font-size: 0.9rem; }
         .tab:hover { color: #e1e4e8; }
         .tab.active { color: #58a6ff; border-bottom-color: #58a6ff; }
@@ -43,15 +43,20 @@
         .confidence.medium { background: #3d2e00; color: #d29922; }
         .confidence.low, .confidence.very_low { background: #3d1e20; color: #f85149; }
         .result-reason { font-size: 0.85rem; color: #c9d1d9; line-height: 1.5; }
-        .result-sig { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.8rem; color: #7ee787; background: #0d1117; padding: 8px 12px; border-radius: 6px; margin: 8px 0; overflow-x: auto; }
+        .result-sig { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.8rem; color: #7ee787; background: #0d1117; padding: 8px 12px; border-radius: 6px; margin: 8px 0; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
         .job-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 14px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
-        .job-status { padding: 3px 10px; border-radius: 12px; font-size: 0.75rem; font-weight: 600; }
+        .job-status { padding: 3px 10px; border-radius: 12px; font-size: 0.75rem; font-weight: 600; display: inline-block; }
         .job-status.completed { background: #0d4429; color: #3fb950; }
         .job-status.running { background: #0c2d6b; color: #58a6ff; }
         .job-status.failed { background: #3d1e20; color: #f85149; }
+        .job-status.started { background: #0c2d6b; color: #58a6ff; }
         .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #30363d; border-top-color: #58a6ff; border-radius: 50%; animation: spin 0.8s linear infinite; margin-right: 8px; vertical-align: middle; }
         @keyframes spin { to { transform: rotate(360deg); } }
         .loading { color: #8b949e; font-size: 0.9rem; padding: 16px 0; }
+        .drop-zone { border: 2px dashed #30363d; border-radius: 8px; padding: 40px 20px; text-align: center; color: #8b949e; cursor: pointer; transition: all 0.2s; }
+        .drop-zone:hover, .drop-zone.dragover { border-color: #58a6ff; color: #58a6ff; background: rgba(88,166,255,0.05); }
+        .drop-zone img { max-width: 100%; max-height: 200px; margin-top: 12px; border-radius: 6px; }
+        .empty-state { text-align: center; color: #484f58; padding: 40px 0; }
 </style>
 </head>
 <body>
@@ -67,6 +72,7 @@
 
     <div class="tabs">
         <div class="tab active" data-panel="localize">Localize Fault</div>
+        <div class="tab" data-panel="imagePanel">Image Localize</div>
         <div class="tab" data-panel="indexPanel">Index Codebase</div>
         <div class="tab" data-panel="jobsPanel">Jobs</div>
     </div>
@@ -85,6 +91,26 @@
             <button class="btn btn-primary" id="localizeBtn" onclick="localizeFault()">Localize</button>
         </div>
         <div class="results" id="localizeResults"></div>
+    </div>
+
+    <!-- Image Localize Panel -->
+    <div class="panel" id="imagePanel">
+        <div class="form-group">
+            <label>Upload a screenshot of the error</label>
+            <div class="drop-zone" id="dropZone" onclick="document.getElementById('imageFile').click()">
+                <div id="dropText">📷 Click or drag an image here</div>
+                <div id="imagePreview"></div>
+                <input type="file" id="imageFile" accept="image/*" style="display:none" onchange="handleImageSelect(this)">
+            </div>
+        </div>
+        <div class="form-group" style="display:flex;gap:12px;align-items:end;">
+            <div style="flex:0 0 120px;">
+                <label>Top K</label>
+                <input type="number" id="imgTopK" value="5" min="1" max="20">
+            </div>
+            <button class="btn btn-primary" id="imgLocalizeBtn" onclick="localizeImage()">Localize from Image</button>
+        </div>
+        <div class="results" id="imageResults"></div>
     </div>
 
     <!-- Index Panel -->
@@ -106,38 +132,38 @@
     <!-- Jobs Panel -->
     <div class="panel" id="jobsPanel">
         <button class="btn btn-secondary" onclick="loadJobs()" style="margin-bottom:16px;">Refresh</button>
-        <div id="jobsList"></div>
+        <div id="jobsList"><div class="empty-state">Click Refresh to load jobs</div></div>
     </div>
 </div>
 
 <script>
 const API = '';
 
-// Tabs
+// --- Tabs ---
 document.querySelectorAll('.tab').forEach(tab => {
     tab.addEventListener('click', () => {
         document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
         document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
         tab.classList.add('active');
         document.getElementById(tab.dataset.panel).classList.add('active');
+        if (tab.dataset.panel === 'jobsPanel') loadJobs();
     });
 });
 
-// Health check
+// --- Health ---
 async function checkHealth() {
     try {
         const r = await fetch(`${API}/health`);
         const d = await r.json();
-        const hDot = document.getElementById('healthDot');
-        const oDot = document.getElementById('osDot');
-        hDot.className = 'status-dot ' + (d.status === 'healthy' ? 'green' : 'yellow');
-        oDot.className = 'status-dot ' + (d.opensearch === 'connected' ? 'green' : 'red');
+        document.getElementById('healthDot').className = 'status-dot ' + (d.status === 'healthy' ? 'green' : 'yellow');
+        document.getElementById('osDot').className = 'status-dot ' + (d.opensearch === 'connected' ? 'green' : 'red');
         document.getElementById('healthText').textContent = d.status;
         document.getElementById('osText').textContent = d.opensearch;
-
-        const s = await fetch(`${API}/stats`);
-        const sd = await s.json();
-        document.getElementById('entityCount').textContent = sd.indexed_entities ?? '—';
+        try {
+            const s = await fetch(`${API}/stats`);
+            const sd = await s.json();
+            document.getElementById('entityCount').textContent = sd.indexed_entities ?? '—';
+        } catch(e) { document.getElementById('entityCount').textContent = '—'; }
     } catch(e) {
         document.getElementById('healthDot').className = 'status-dot red';
         document.getElementById('healthText').textContent = 'unreachable';
@@ -146,97 +172,154 @@ async function checkHealth() {
 checkHealth();
 setInterval(checkHealth, 30000);
 
-// Localize
+// --- Render results (shared) ---
+function renderResults(results, cached) {
+    return results.map((r, i) => `
+        <div class="result-card">
+            <div class="result-header">
+                <span class="result-name">#${i+1} ${r.full_name || r.name}</span>
+                <span class="confidence ${r.confidence_label || (r.confidence > 0.7 ? 'high' : r.confidence > 0.4 ? 'medium' : 'low')}">${(r.confidence * 100).toFixed(0)}%</span>
+            </div>
+            <div class="result-file">📄 ${r.file_path.replace(/^\/tmp\/[^/]+\//, '')} : ${r.start_line}–${r.end_line}</div>
+            <div class="result-sig">${escapeHtml(r.signature)}</div>
+            <div class="result-reason">${escapeHtml(r.reason)}</div>
+        </div>
+    `).join('') + (cached ? '<div style="color:#8b949e;font-size:0.8rem;margin-top:8px;">⚡ Cached result</div>' : '');
+}
+
+function escapeHtml(s) {
+    if (!s) return '';
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// --- Localize (text) ---
 async function localizeFault() {
     const btn = document.getElementById('localizeBtn');
     const out = document.getElementById('localizeResults');
     const text = document.getElementById('errorText').value.trim();
     if (!text) return;
-
     btn.disabled = true;
     out.innerHTML = '<div class="loading"><span class="spinner"></span>Analyzing stack trace with AI...</div>';
-
     try {
         const r = await fetch(`${API}/localize`, {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
+            method: 'POST', headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({ error_text: text, top_k: parseInt(document.getElementById('topK').value) })
         });
         const d = await r.json();
-        if (d.detail) { out.innerHTML = `<div class="result-card" style="border-color:#f85149;">${d.detail}</div>`; return; }
-
-        out.innerHTML = d.results.map((r, i) => `
-            <div class="result-card">
-                <div class="result-header">
-                    <span class="result-name">#${i+1} ${r.full_name || r.name}</span>
-                    <span class="confidence ${r.confidence_label || (r.confidence > 0.7 ? 'high' : r.confidence > 0.4 ? 'medium' : 'low')}">${(r.confidence * 100).toFixed(0)}%</span>
-                </div>
-                <div class="result-file">📄 ${r.file_path.replace(/^\/tmp\/[^/]+\//, '')} : ${r.start_line}–${r.end_line}</div>
-                <div class="result-sig">${r.signature}</div>
-                <div class="result-reason">${r.reason}</div>
-            </div>
-        `).join('') + (d.cached ? '<div style="color:#8b949e;font-size:0.8rem;margin-top:8px;">⚡ Cached result</div>' : '');
+        if (d.detail) { out.innerHTML = `<div class="result-card" style="border-color:#f85149;">${escapeHtml(d.detail)}</div>`; return; }
+        out.innerHTML = renderResults(d.results, d.cached);
     } catch(e) {
-        out.innerHTML = `<div class="result-card" style="border-color:#f85149;">Error: ${e.message}</div>`;
+        out.innerHTML = `<div class="result-card" style="border-color:#f85149;">Error: ${escapeHtml(e.message)}</div>`;
     } finally { btn.disabled = false; }
 }
 
-// Index
+// --- Image localize ---
+let selectedFile = null;
+
+function handleImageSelect(input) {
+    const file = input.files[0];
+    if (!file) return;
+    selectedFile = file;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        document.getElementById('dropText').style.display = 'none';
+        document.getElementById('imagePreview').innerHTML = `<img src="${e.target.result}" alt="Preview"><div style="margin-top:8px;color:#8b949e;font-size:0.8rem;">${escapeHtml(file.name)}</div>`;
+    };
+    reader.readAsDataURL(file);
+}
+
+// Drag and drop
+const dz = document.getElementById('dropZone');
+dz.addEventListener('dragover', (e) => { e.preventDefault(); dz.classList.add('dragover'); });
+dz.addEventListener('dragleave', () => dz.classList.remove('dragover'));
+dz.addEventListener('drop', (e) => {
+    e.preventDefault(); dz.classList.remove('dragover');
+    const file = e.dataTransfer.files[0];
+    if (file && file.type.startsWith('image/')) {
+        const input = document.getElementById('imageFile');
+        const dt = new DataTransfer();
+        dt.items.add(file);
+        input.files = dt.files;
+        handleImageSelect(input);
+    }
+});
+
+async function localizeImage() {
+    if (!selectedFile) { alert('Please select an image first'); return; }
+    const btn = document.getElementById('imgLocalizeBtn');
+    const out = document.getElementById('imageResults');
+    btn.disabled = true;
+    out.innerHTML = '<div class="loading"><span class="spinner"></span>Extracting error from image and analyzing...</div>';
+    try {
+        const fd = new FormData();
+        fd.append('file', selectedFile);
+        fd.append('top_k', document.getElementById('imgTopK').value);
+        const r = await fetch(`${API}/localize/image/upload`, { method: 'POST', body: fd });
+        const d = await r.json();
+        if (d.detail) { out.innerHTML = `<div class="result-card" style="border-color:#f85149;">${escapeHtml(d.detail)}</div>`; return; }
+        out.innerHTML = renderResults(d.results, d.cached);
+    } catch(e) {
+        out.innerHTML = `<div class="result-card" style="border-color:#f85149;">Error: ${escapeHtml(e.message)}</div>`;
+    } finally { btn.disabled = false; }
+}
+
+// --- Index ---
 async function startIndex() {
     const out = document.getElementById('indexResults');
     const uri = document.getElementById('s3Uri').value.trim();
     if (!uri) return;
-
     out.innerHTML = '<div class="loading"><span class="spinner"></span>Starting indexing job...</div>';
     try {
         const r = await fetch(`${API}/index`, {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
+            method: 'POST', headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({ s3_uri: uri, workers: parseInt(document.getElementById('workers').value) })
         });
         const d = await r.json();
-        if (d.detail) { out.innerHTML = `<div class="result-card" style="border-color:#f85149;">${d.detail}</div>`; return; }
-        out.innerHTML = `<div class="result-card"><strong>Job ${d.job_id}</strong> — ${d.status}<br><span style="color:#8b949e">${d.message}</span></div>`;
+        if (d.detail) { out.innerHTML = `<div class="result-card" style="border-color:#f85149;">${escapeHtml(d.detail)}</div>`; return; }
+        out.innerHTML = `<div class="result-card"><strong>Job ${d.job_id}</strong> — ${d.status}<br><span style="color:#8b949e">${escapeHtml(d.message)}</span></div>`;
         pollJob(d.job_id, out);
     } catch(e) {
-        out.innerHTML = `<div class="result-card" style="border-color:#f85149;">Error: ${e.message}</div>`;
+        out.innerHTML = `<div class="result-card" style="border-color:#f85149;">Error: ${escapeHtml(e.message)}</div>`;
     }
 }
 
-async function pollJob(id, out) {
+function pollJob(id, out) {
     const poll = setInterval(async () => {
         try {
             const r = await fetch(`${API}/index/${id}`);
             const d = await r.json();
             out.innerHTML = `<div class="result-card">
                 <strong>Job ${d.job_id}</strong> — <span class="job-status ${d.status}">${d.status}</span>
-                <br>Entities: ${d.entities_indexed} | Progress: ${(d.progress * 100).toFixed(0)}%
-                ${d.error ? '<br><span style="color:#f85149;">'+d.error+'</span>' : ''}
+                <br>Entities: ${d.entities_indexed}${d.status === 'running' ? ' | Progress: '+(d.progress * 100).toFixed(0)+'%' : ''}
+                ${d.error ? '<br><span style="color:#f85149;">'+escapeHtml(d.error)+'</span>' : ''}
             </div>`;
             if (d.status === 'completed' || d.status === 'failed') { clearInterval(poll); checkHealth(); }
         } catch(e) { clearInterval(poll); }
     }, 3000);
 }
 
-// Jobs
+// --- Jobs ---
 async function loadJobs() {
     const out = document.getElementById('jobsList');
-    out.innerHTML = '<div class="loading"><span class="spinner"></span>Loading...</div>';
+    out.innerHTML = '<div class="loading"><span class="spinner"></span>Loading jobs...</div>';
     try {
         const r = await fetch(`${API}/index/jobs/list`);
         const d = await r.json();
-        if (!d.jobs || d.jobs.length === 0) { out.innerHTML = '<div style="color:#8b949e;">No jobs yet.</div>'; return; }
+        if (!d.jobs || d.jobs.length === 0) {
+            out.innerHTML = '<div class="empty-state">No indexing jobs yet. Go to Index Codebase to start one.</div>';
+            return;
+        }
         out.innerHTML = d.jobs.map(j => `
             <div class="job-card">
                 <div>
-                    <strong>${j.job_id}</strong>
-                    <div style="color:#8b949e;font-size:0.8rem;">${j.source || ''} — ${j.entities_indexed ?? 0} entities</div>
+                    <strong style="color:#58a6ff;">${j.job_id}</strong>
+                    <div style="color:#8b949e;font-size:0.8rem;margin-top:4px;">${escapeHtml(j.source || 'unknown')} — ${j.entities_indexed ?? 0} entities</div>
                 </div>
                 <span class="job-status ${j.status}">${j.status}</span>
             </div>
         `).join('');
     } catch(e) {
-        out.innerHTML = `<div style="color:#f85149;">Error: ${e.message}</div>`;
+        out.innerHTML = `<div class="result-card" style="border-color:#f85149;">Error loading jobs: ${escapeHtml(e.message)}</div>`;
     }
 }
 </script>

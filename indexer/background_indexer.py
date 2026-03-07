@@ -58,6 +58,7 @@ class BackgroundIndexer:
         try:
             count = index_func(*args, progress_callback=lambda p: self._update_progress(job, p))
             job.entities_indexed = count
+            job.progress = 1.0
             job.status = IndexStatus.COMPLETED
         except Exception as e:
             job.status = IndexStatus.FAILED
