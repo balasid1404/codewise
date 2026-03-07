@@ -33,7 +33,9 @@ class S3CodebaseLoader:
                 # Skip directories and non-code files
                 if key.endswith("/"):
                     continue
-                if not (key.endswith(".py") or key.endswith(".java")):
+                if not (key.endswith(".py") or key.endswith(".java")
+                        or key.endswith(".js") or key.endswith(".ts")
+                        or key.endswith(".html")):
                     continue
 
                 # Download file
