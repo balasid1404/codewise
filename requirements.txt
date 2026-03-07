@@ -5,6 +5,7 @@ numpy>=1.24.0
 
 # Code parsing
 javalang>=0.13.0
+tree-sitter<0.22
 tree-sitter-languages>=1.10.0
 
 # AWS
