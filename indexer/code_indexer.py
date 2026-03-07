@@ -2,6 +2,8 @@ from pathlib import Path
 from sentence_transformers import SentenceTransformer
 from .python_parser import PythonParser
 from .java_parser import JavaParser
+from .js_ts_parser import JsTsParser
+from .html_parser import HtmlParser
 from .entities import CodeEntity
 
 
@@ -9,6 +11,8 @@ class CodeIndexer:
     def __init__(self, model_name: str = "microsoft/unixcoder-base"):
         self.python_parser = PythonParser()
         self.java_parser = JavaParser()
+        self.js_ts_parser = JsTsParser()
+        self.html_parser = HtmlParser()
         self.encoder = SentenceTransformer(model_name)
         self.entities: dict[str, CodeEntity] = {}
 
@@ -24,6 +28,21 @@ class CodeIndexer:
             if self._should_skip(java_file):
                 continue
             entities.extend(self.java_parser.parse_file(java_file))
+
+        for js_file in path.rglob("*.js"):
+            if self._should_skip(js_file):
+                continue
+            entities.extend(self.js_ts_parser.parse_file(js_file))
+
+        for ts_file in path.rglob("*.ts"):
+            if self._should_skip(ts_file):
+                continue
+            entities.extend(self.js_ts_parser.parse_file(ts_file))
+
+        for html_file in path.rglob("*.html"):
+            if self._should_skip(html_file):
+                continue
+            entities.extend(self.html_parser.parse_file(html_file))
 
         # Generate embeddings
         texts = [e.to_search_text() for e in entities]

@@ -36,9 +36,12 @@ class FaultLocalizerProd:
 
         py_files = list(codebase.rglob("*.py"))
         java_files = list(codebase.rglob("*.java"))
-        all_files = py_files + java_files
+        js_files = list(codebase.rglob("*.js"))
+        ts_files = list(codebase.rglob("*.ts"))
+        html_files = list(codebase.rglob("*.html"))
+        all_files = py_files + java_files + js_files + ts_files + html_files
 
-        skip_dirs = {"venv", "node_modules", ".git", "__pycache__", "build", "dist"}
+        skip_dirs = {"venv", "node_modules", ".git", "__pycache__", "build", "dist", "cdk.out"}
         all_files = [f for f in all_files if not any(d in f.parts for d in skip_dirs)]
 
         total_indexed = 0
@@ -50,8 +53,12 @@ class FaultLocalizerProd:
                 try:
                     if f.suffix == ".py":
                         entities.extend(indexer.python_parser.parse_file(f))
-                    else:
+                    elif f.suffix == ".java":
                         entities.extend(indexer.java_parser.parse_file(f))
+                    elif f.suffix in (".js", ".ts"):
+                        entities.extend(indexer.js_ts_parser.parse_file(f))
+                    elif f.suffix == ".html":
+                        entities.extend(indexer.html_parser.parse_file(f))
                 except Exception:
                     continue
 
