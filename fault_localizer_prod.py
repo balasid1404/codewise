@@ -236,8 +236,17 @@ class FaultLocalizerProd:
     ) -> list[tuple[CodeEntity, float]]:
         scores: dict[str, tuple[CodeEntity, float]] = {}
         for entity, score in direct + searched:
-            if entity.id not in scores or scores[entity.id][1] < score:
-                scores[entity.id] = (entity, score)
+            # Dedupe by id, and also by name+signature to catch copies in different paths
+            key = entity.id
+            sig_key = f"{entity.name}:{entity.signature}:{entity.start_line}"
+            existing_by_sig = None
+            for k, (e, s) in scores.items():
+                if f"{e.name}:{e.signature}:{e.start_line}" == sig_key:
+                    existing_by_sig = k
+                    break
+            dedup_key = existing_by_sig or key
+            if dedup_key not in scores or scores[dedup_key][1] < score:
+                scores[dedup_key] = (entity, score)
         merged = list(scores.values())
         merged.sort(key=lambda x: x[1], reverse=True)
         return merged
