@@ -101,10 +101,10 @@ class FaultLocalizerProd:
         else:
             return [{"entity": e, "score": s, "reason": ""} for e, s in all_candidates[:top_k]]
 
-    def localize_from_image(self, image_path: str, top_k: int = 5) -> list[dict]:
+    def localize_from_image(self, image_path: str, top_k: int = 5, context: str = "") -> list[dict]:
         """Localize fault from a screenshot."""
         # 1. Extract context from image using vision LLM
-        extracted = self.image_extractor.extract_from_image(image_path)
+        extracted = self.image_extractor.extract_from_image(image_path, context=context)
 
         # 2. Map UI elements to code patterns
         search_context = self.ui_mapper.build_search_context(extracted)
@@ -153,6 +153,68 @@ class FaultLocalizerProd:
                 "reason": "",
                 "image_context": extracted
             } for e, s in all_candidates[:top_k]]
+    def localize_unified(self, error_text: str = "", image_path: str = "", top_k: int = 5) -> dict:
+        """Unified localization: text + optional image. Returns results and image extraction data."""
+        image_extracted = None
+        image_query_parts = []
+
+        # If image provided, extract context from it
+        if image_path:
+            image_extracted = self.image_extractor.extract_from_image(image_path, context=error_text)
+            search_context = self.ui_mapper.build_search_context(image_extracted)
+            image_query_parts.extend(search_context["code_patterns"])
+            if search_context["error_text"]:
+                image_query_parts.append(search_context["error_text"])
+            if search_context["context"]:
+                image_query_parts.append(search_context["context"])
+
+        # Build combined query
+        all_candidates = []
+
+        # Text-based search
+        if error_text:
+            error = self._extract_error(error_text)
+            text_query = f"{error.exception_type} {error.message} {' '.join(error.method_names)}"
+            text_embedding = self.encoder.encode(text_query).tolist()
+
+            for frame in error.frames:
+                for entity in self.store.get_by_name(frame.method_name):
+                    all_candidates.append((entity, 1.0))
+
+            all_candidates.extend(self.store.search_hybrid(text_query, text_embedding, top_k=50))
+
+        # Image-based search
+        if image_query_parts:
+            img_query = " ".join(image_query_parts)
+            img_embedding = self.encoder.encode(img_query).tolist()
+
+            for pattern in image_query_parts[:20]:
+                for entity in self.store.get_by_name(pattern):
+                    all_candidates.append((entity, 0.9))
+
+            all_candidates.extend(self.store.search_hybrid(img_query, img_embedding, top_k=50))
+
+        merged = self._merge_candidates(all_candidates, [])
+
+        # LLM re-rank
+        if self.use_llm and self.ranker and merged:
+            context_parts = []
+            if error_text:
+                context_parts.append(error_text[:500])
+            if image_extracted:
+                context_parts.append(f"UI: {image_extracted.get('app_section', '')} | {image_extracted.get('error_message', '')} | Elements: {image_extracted.get('ui_elements', [])}")
+
+            pseudo_error = ExtractedError(
+                exception_type="Fault" if error_text else "UI Bug",
+                message=" | ".join(context_parts)[:300],
+                frames=self._extract_error(error_text).frames if error_text else [],
+                raw_text="\n".join(context_parts)
+            )
+            results = self.ranker.rank_and_explain(pseudo_error, merged, top_k)
+        else:
+            results = [{"entity": e, "score": s, "reason": ""} for e, s in merged[:top_k]]
+
+        return {"results": results, "image_extracted": image_extracted}
 
     def _extract_error(self, error_text: str) -> ExtractedError:
         if self.python_extractor.can_parse(error_text):

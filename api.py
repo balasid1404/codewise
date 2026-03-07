@@ -269,9 +269,66 @@ async def localize_from_image(request: ImageLocalizeRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/localize/unified")
+async def localize_unified(
+    error_text: str = Form(""),
+    file: Optional[UploadFile] = File(None),
+    top_k: int = Form(5),
+):
+    """Unified localization: text + optional image. Returns results and image extraction JSON."""
+    if not localizer:
+        raise HTTPException(status_code=503, detail="OpenSearch not available")
+
+    if not error_text and not file:
+        raise HTTPException(status_code=400, detail="Provide error text, an image, or both")
+
+    tmp_path = None
+    try:
+        if file and file.filename:
+            suffix = Path(file.filename).suffix or ".png"
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                content = await file.read()
+                tmp.write(content)
+                tmp_path = tmp.name
+
+        result = localizer.localize_unified(
+            error_text=error_text,
+            image_path=tmp_path or "",
+            top_k=top_k,
+        )
+
+        locations = []
+        for r in result["results"]:
+            entity = r["entity"]
+            confidence = r.get("confidence", r.get("score", 0))
+            locations.append({
+                "name": entity.name,
+                "full_name": entity.full_name,
+                "file_path": entity.file_path,
+                "start_line": entity.start_line,
+                "end_line": entity.end_line,
+                "signature": entity.signature,
+                "confidence": confidence,
+                "confidence_label": _get_confidence_label(confidence),
+                "reason": r.get("reason", ""),
+            })
+
+        return {
+            "results": locations,
+            "image_extracted": result["image_extracted"],
+            "cached": False,
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if tmp_path:
+            os.unlink(tmp_path)
+
+
 @app.post("/localize/image/upload", response_model=LocalizeResponse)
-async def localize_from_image_upload(file: UploadFile = File(...), top_k: int = Form(5)):
-    """Localize fault from uploaded screenshot."""
+async def localize_from_image_upload(file: UploadFile = File(...), top_k: int = Form(5), context: str = Form("")):
+    """Localize fault from uploaded screenshot with optional follow-up context."""
     if not localizer:
         raise HTTPException(status_code=503, detail="OpenSearch not available")
 
@@ -283,7 +340,7 @@ async def localize_from_image_upload(file: UploadFile = File(...), top_k: int = 
             tmp_path = tmp.name
 
         try:
-            results = localizer.localize_from_image(tmp_path, top_k)
+            results = localizer.localize_from_image(tmp_path, top_k, context=context)
         finally:
             os.unlink(tmp_path)
 

@@ -21,7 +21,7 @@
         .tab.active { color: #58a6ff; border-bottom-color: #58a6ff; }
         .panel { display: none; }
         .panel.active { display: block; }
-        textarea { width: 100%; min-height: 180px; background: #0d1117; border: 1px solid #30363d; border-radius: 8px; color: #e1e4e8; padding: 14px; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.85rem; resize: vertical; outline: none; }
+        textarea { width: 100%; min-height: 150px; background: #0d1117; border: 1px solid #30363d; border-radius: 8px; color: #e1e4e8; padding: 14px; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.85rem; resize: vertical; outline: none; }
         textarea:focus { border-color: #58a6ff; }
         .form-group { margin-bottom: 16px; }
         label { display: block; margin-bottom: 6px; font-size: 0.85rem; color: #8b949e; }
@@ -33,6 +33,8 @@
         .btn-primary:disabled { background: #21262d; color: #484f58; cursor: not-allowed; }
         .btn-secondary { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; }
         .btn-secondary:hover { background: #30363d; }
+        .btn-danger { background: transparent; color: #f85149; border: none; cursor: pointer; font-size: 0.8rem; padding: 4px 8px; }
+        .btn-danger:hover { text-decoration: underline; }
         .results { margin-top: 24px; }
         .result-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; margin-bottom: 12px; }
         .result-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
@@ -53,11 +55,17 @@
         .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #30363d; border-top-color: #58a6ff; border-radius: 50%; animation: spin 0.8s linear infinite; margin-right: 8px; vertical-align: middle; }
         @keyframes spin { to { transform: rotate(360deg); } }
         .loading { color: #8b949e; font-size: 0.9rem; padding: 16px 0; }
-        .drop-zone { border: 2px dashed #30363d; border-radius: 8px; padding: 40px 20px; text-align: center; color: #8b949e; cursor: pointer; transition: all 0.2s; }
+        .drop-zone { border: 2px dashed #30363d; border-radius: 8px; padding: 24px 16px; text-align: center; color: #8b949e; cursor: pointer; transition: all 0.2s; }
         .drop-zone:hover, .drop-zone.dragover { border-color: #58a6ff; color: #58a6ff; background: rgba(88,166,255,0.05); }
-        .drop-zone img { max-width: 100%; max-height: 200px; margin-top: 12px; border-radius: 6px; }
+        .drop-zone img { max-width: 100%; max-height: 160px; margin-top: 10px; border-radius: 6px; }
         .empty-state { text-align: center; color: #484f58; padding: 40px 0; }
-</style>
+        .image-json { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 14px; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.8rem; color: #8b949e; white-space: pre-wrap; word-break: break-all; max-height: 300px; overflow-y: auto; margin-top: 12px; }
+        .image-json-label { font-size: 0.8rem; color: #58a6ff; margin-top: 16px; margin-bottom: 4px; }
+        .two-col { display: flex; gap: 24px; }
+        .two-col > .col-main { flex: 1; min-width: 0; }
+        .two-col > .col-side { flex: 0 0 340px; min-width: 0; }
+        @media (max-width: 800px) { .two-col { flex-direction: column; } .two-col > .col-side { flex: 1; } }
+    </style>
 </head>
 <body>
 <div class="container">
@@ -70,46 +78,42 @@
     </div>
 
     <div class="tabs">
-        <div class="tab active" data-panel="localize">Localize Fault</div>
-        <div class="tab" data-panel="imagePanel">Image Localize</div>
+        <div class="tab active" data-panel="localize">Localize</div>
         <div class="tab" data-panel="indexPanel">Index Codebase</div>
         <div class="tab" data-panel="jobsPanel">Jobs</div>
     </div>
 
-    <!-- Localize Panel -->
+    <!-- Unified Localize Panel -->
     <div class="panel active" id="localize">
         <div class="form-group">
-            <label>Paste your stack trace or error message</label>
-            <textarea id="errorText" placeholder="Traceback (most recent call last):&#10;  File &quot;api.py&quot;, line 45, in lifespan&#10;    ...&#10;TypeError: something went wrong"></textarea>
+            <label>Stack trace, error message, or describe what you're looking for</label>
+            <textarea id="errorText" placeholder="Paste a stack trace, error message, or ask something like:&#10;&#10;find the code for the payment verification banner&#10;which component handles the checkout flow?"></textarea>
+        </div>
+        <div class="form-group">
+            <label>Attach a screenshot (optional)</label>
+            <div class="drop-zone" id="dropZone" onclick="document.getElementById('imageFile').click()">
+                <div id="dropText">📷 Click or drag an image here</div>
+                <div id="imagePreview"></div>
+                <input type="file" id="imageFile" accept="image/*" style="display:none" onchange="handleImageSelect(this)">
+            </div>
+            <button class="btn-danger" id="clearImgBtn" style="display:none;margin-top:6px;" onclick="clearImage()">✕ Remove image</button>
         </div>
         <div class="form-group" style="display:flex;gap:12px;align-items:end;">
             <div style="flex:0 0 120px;">
                 <label>Top K</label>
                 <input type="number" id="topK" value="5" min="1" max="20">
             </div>
-            <button class="btn btn-primary" id="localizeBtn" onclick="localizeFault()">Localize</button>
+            <button class="btn btn-primary" id="localizeBtn" onclick="doLocalize()">Localize</button>
         </div>
-        <div class="results" id="localizeResults"></div>
-    </div>
-
-    <!-- Image Localize Panel -->
-    <div class="panel" id="imagePanel">
-        <div class="form-group">
-            <label>Upload a screenshot of the error</label>
-            <div class="drop-zone" id="dropZone" onclick="document.getElementById('imageFile').click()">
-                <div id="dropText">📷 Click or drag an image here</div>
-                <div id="imagePreview"></div>
-                <input type="file" id="imageFile" accept="image/*" style="display:none" onchange="handleImageSelect(this)">
+        <div class="two-col">
+            <div class="col-main">
+                <div class="results" id="localizeResults"></div>
+            </div>
+            <div class="col-side" id="imageJsonCol" style="display:none;">
+                <div class="image-json-label">🖼 Image Extraction</div>
+                <div class="image-json" id="imageJsonOutput"></div>
             </div>
         </div>
-        <div class="form-group" style="display:flex;gap:12px;align-items:end;">
-            <div style="flex:0 0 120px;">
-                <label>Top K</label>
-                <input type="number" id="imgTopK" value="5" min="1" max="20">
-            </div>
-            <button class="btn btn-primary" id="imgLocalizeBtn" onclick="localizeImage()">Localize from Image</button>
-        </div>
-        <div class="results" id="imageResults"></div>
     </div>
 
     <!-- Index Panel -->
@@ -166,7 +170,11 @@ async function checkHealth() {
 checkHealth();
 setInterval(checkHealth, 30000);
 
-// --- Render results (shared) ---
+function escapeHtml(s) {
+    if (!s) return '';
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
 function renderResults(results, cached) {
     return results.map((r, i) => `
         <div class="result-card">
@@ -181,33 +189,7 @@ function renderResults(results, cached) {
     `).join('') + (cached ? '<div style="color:#8b949e;font-size:0.8rem;margin-top:8px;">⚡ Cached result</div>' : '');
 }
 
-function escapeHtml(s) {
-    if (!s) return '';
-    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-}
-
-// --- Localize (text) ---
-async function localizeFault() {
-    const btn = document.getElementById('localizeBtn');
-    const out = document.getElementById('localizeResults');
-    const text = document.getElementById('errorText').value.trim();
-    if (!text) return;
-    btn.disabled = true;
-    out.innerHTML = '<div class="loading"><span class="spinner"></span>Analyzing stack trace with AI...</div>';
-    try {
-        const r = await fetch(`${API}/localize`, {
-            method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ error_text: text, top_k: parseInt(document.getElementById('topK').value) })
-        });
-        const d = await r.json();
-        if (d.detail) { out.innerHTML = `<div class="result-card" style="border-color:#f85149;">${escapeHtml(d.detail)}</div>`; return; }
-        out.innerHTML = renderResults(d.results, d.cached);
-    } catch(e) {
-        out.innerHTML = `<div class="result-card" style="border-color:#f85149;">Error: ${escapeHtml(e.message)}</div>`;
-    } finally { btn.disabled = false; }
-}
-
-// --- Image localize ---
+// --- Image handling ---
 let selectedFile = null;
 
 function handleImageSelect(input) {
@@ -218,11 +200,20 @@ function handleImageSelect(input) {
     reader.onload = (e) => {
         document.getElementById('dropText').style.display = 'none';
         document.getElementById('imagePreview').innerHTML = `<img src="${e.target.result}" alt="Preview"><div style="margin-top:8px;color:#8b949e;font-size:0.8rem;">${escapeHtml(file.name)}</div>`;
+        document.getElementById('clearImgBtn').style.display = 'inline-block';
     };
     reader.readAsDataURL(file);
 }
 
-// Drag and drop
+function clearImage() {
+    selectedFile = null;
+    document.getElementById('imageFile').value = '';
+    document.getElementById('dropText').style.display = '';
+    document.getElementById('imagePreview').innerHTML = '';
+    document.getElementById('clearImgBtn').style.display = 'none';
+    document.getElementById('imageJsonCol').style.display = 'none';
+}
+
 const dz = document.getElementById('dropZone');
 dz.addEventListener('dragover', (e) => { e.preventDefault(); dz.classList.add('dragover'); });
 dz.addEventListener('dragleave', () => dz.classList.remove('dragover'));
@@ -238,23 +229,54 @@ dz.addEventListener('drop', (e) => {
     }
 });
 
-async function localizeImage() {
-    if (!selectedFile) { alert('Please select an image first'); return; }
-    const btn = document.getElementById('imgLocalizeBtn');
-    const out = document.getElementById('imageResults');
+// --- Unified Localize ---
+async function doLocalize() {
+    const btn = document.getElementById('localizeBtn');
+    const out = document.getElementById('localizeResults');
+    const jsonCol = document.getElementById('imageJsonCol');
+    const jsonOut = document.getElementById('imageJsonOutput');
+    const text = document.getElementById('errorText').value.trim();
+    const topK = parseInt(document.getElementById('topK').value);
+
+    if (!text && !selectedFile) { alert('Enter text, attach an image, or both'); return; }
+
     btn.disabled = true;
-    out.innerHTML = '<div class="loading"><span class="spinner"></span>Extracting error from image and analyzing...</div>';
-    try {
-        const fd = new FormData();
-        fd.append('file', selectedFile);
-        fd.append('top_k', document.getElementById('imgTopK').value);
-        const r = await fetch(`${API}/localize/image/upload`, { method: 'POST', body: fd });
-        const d = await r.json();
-        if (d.detail) { out.innerHTML = `<div class="result-card" style="border-color:#f85149;">${escapeHtml(d.detail)}</div>`; return; }
-        out.innerHTML = renderResults(d.results, d.cached);
-    } catch(e) {
-        out.innerHTML = `<div class="result-card" style="border-color:#f85149;">Error: ${escapeHtml(e.message)}</div>`;
-    } finally { btn.disabled = false; }
+    jsonCol.style.display = 'none';
+
+    // If image is attached, use unified endpoint
+    if (selectedFile) {
+        out.innerHTML = '<div class="loading"><span class="spinner"></span>Analyzing image + text with AI...</div>';
+        try {
+            const fd = new FormData();
+            fd.append('error_text', text);
+            fd.append('file', selectedFile);
+            fd.append('top_k', topK);
+            const r = await fetch(`${API}/localize/unified`, { method: 'POST', body: fd });
+            const d = await r.json();
+            if (d.detail) { out.innerHTML = `<div class="result-card" style="border-color:#f85149;">${escapeHtml(d.detail)}</div>`; return; }
+            out.innerHTML = renderResults(d.results, d.cached);
+            if (d.image_extracted) {
+                jsonCol.style.display = 'block';
+                jsonOut.textContent = JSON.stringify(d.image_extracted, null, 2);
+            }
+        } catch(e) {
+            out.innerHTML = `<div class="result-card" style="border-color:#f85149;">Error: ${escapeHtml(e.message)}</div>`;
+        } finally { btn.disabled = false; }
+    } else {
+        // Text only — use original endpoint
+        out.innerHTML = '<div class="loading"><span class="spinner"></span>Analyzing with AI...</div>';
+        try {
+            const r = await fetch(`${API}/localize`, {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ error_text: text, top_k: topK })
+            });
+            const d = await r.json();
+            if (d.detail) { out.innerHTML = `<div class="result-card" style="border-color:#f85149;">${escapeHtml(d.detail)}</div>`; return; }
+            out.innerHTML = renderResults(d.results, d.cached);
+        } catch(e) {
+            out.innerHTML = `<div class="result-card" style="border-color:#f85149;">Error: ${escapeHtml(e.message)}</div>`;
+        } finally { btn.disabled = false; }
+    }
 }
 
 // --- Index ---

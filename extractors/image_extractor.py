@@ -11,7 +11,7 @@ class ImageExtractor:
         self.client = boto3.client("bedrock-runtime", region_name=region)
         self.model_id = model_id
 
-    def extract_from_image(self, image_path: str) -> dict:
+    def extract_from_image(self, image_path: str, context: str = "") -> dict:
         """
         Extract fault-relevant information from a screenshot.
 
@@ -50,6 +50,9 @@ Extract the following information as JSON:
 
 Focus on information that would help a developer find the relevant code.
 If no error is visible, describe the UI state that appears broken."""
+
+        if context:
+            prompt += f"\n\nThe user specifically wants to find code related to: {context}\nPrioritize keywords and UI elements relevant to this request."
 
         response = self.client.converse(
             modelId=self.model_id,
