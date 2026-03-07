@@ -5,7 +5,9 @@ WORKDIR /app
 # Install dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-RUN pip install --no-cache-dir fastapi uvicorn opensearch-py
+
+# Pre-download the ML model at build time (avoids slow runtime download)
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('microsoft/codebert-base')"
 
 # Copy source
 COPY . .
