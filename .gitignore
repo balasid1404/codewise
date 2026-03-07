@@ -1,32 +1,35 @@
 # Python
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
-.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
 venv/
-env/
-.env
+.venv/
 
 # IDE
 .idea/
 .vscode/
 *.swp
+*.swo
+
+# Cache
+.cache/
+*.pkl
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.local
+
+# AWS
+cdk.out/
 
 # Test artifacts
 .pytest_cache/
 .coverage
 htmlcov/
-
-# Generated
-test-codebase/
-*.egg-info/
-dist/
-build/
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Logs
-*.log

@@ -1,3 +1,9 @@
-from .hybrid_retriever import HybridRetriever
+"""Hybrid retrieval (BM25 + semantic search)."""
 
-__all__ = ["HybridRetriever"]
+from .hybrid_retriever import HybridRetriever
+from .smart_booster import SmartBooster
+
+__all__ = [
+    "HybridRetriever",
+    "SmartBooster",
+]

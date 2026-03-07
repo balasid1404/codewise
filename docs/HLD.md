@@ -282,7 +282,7 @@ GET /health
 | Language | Python 3.11 |
 | API Framework | FastAPI |
 | Vector Store | OpenSearch 2.x |
-| Embeddings | CodeBERT (sentence-transformers) |
+| Embeddings | UniXcoder (microsoft/unixcoder-base) |
 | LLM | Amazon Bedrock (Claude 3 Sonnet) |
 | Vision | Amazon Bedrock (Claude 3 Sonnet) |
 | Container | Docker |

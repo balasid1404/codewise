@@ -1,4 +1,5 @@
-from .opensearch_store import OpenSearchStore
-from .base import VectorStore
+"""Storage backends for production scale."""
 
-__all__ = ["OpenSearchStore", "VectorStore"]
+from .opensearch_store import OpenSearchStore
+
+__all__ = ["OpenSearchStore"]

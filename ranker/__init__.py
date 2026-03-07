@@ -1,3 +1,9 @@
-from .llm_ranker import LLMRanker
+"""LLM-based ranking and solution generation."""
 
-__all__ = ["LLMRanker"]
+from .llm_ranker import LLMRanker
+from .solution_generator import SolutionGenerator
+
+__all__ = [
+    "LLMRanker",
+    "SolutionGenerator",
+]

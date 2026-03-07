@@ -1,5 +1,11 @@
 """Example usage of the fault localizer."""
 
+from pathlib import Path
+
+# Get the directory where this script is located
+SCRIPT_DIR = Path(__file__).parent
+SAMPLE_REPO = SCRIPT_DIR / "sample-repo"
+
 from fault_localizer import FaultLocalizer
 
 # Example Python stack trace
@@ -29,7 +35,7 @@ java.lang.NullPointerException: Cannot invoke method on null object
 def main():
     # Initialize with path to your codebase
     localizer = FaultLocalizer(
-        codebase_path="./sample-repo",
+        codebase_path=str(SAMPLE_REPO),
         use_llm=False  # Set True if you have AWS credentials configured
     )
 

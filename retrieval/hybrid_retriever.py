@@ -2,12 +2,14 @@ import numpy as np
 from rank_bm25 import BM25Okapi
 from sentence_transformers import SentenceTransformer
 from indexer.entities import CodeEntity
+from retrieval.smart_booster import SmartBooster
 
 
 class HybridRetriever:
     def __init__(self, entities: list[CodeEntity], encoder: SentenceTransformer):
         self.entities = entities
         self.encoder = encoder
+        self.booster = SmartBooster()
 
         # Build BM25 index
         tokenized = [e.to_search_text().lower().split() for e in entities]
@@ -17,7 +19,7 @@ class HybridRetriever:
         self.embeddings = np.array([e.embedding for e in entities if e.embedding])
 
     def search(self, query: str, top_k: int = 20, bm25_candidates: int = 100) -> list[tuple[CodeEntity, float]]:
-        """Hybrid search: BM25 first pass, then dense re-ranking."""
+        """Hybrid search: BM25 first pass, then dense re-ranking, then domain boosting."""
         # BM25 first pass
         tokenized_query = query.lower().split()
         bm25_scores = self.bm25.get_scores(tokenized_query)
@@ -37,6 +39,10 @@ class HybridRetriever:
                 scored.append((entity, combined))
 
         scored.sort(key=lambda x: x[1], reverse=True)
+        
+        # Apply smart query-aware boosting
+        scored = self.booster.rerank(query, scored[:top_k * 2])
+        
         return scored[:top_k]
 
     def search_by_methods(self, method_names: list[str], top_k: int = 20) -> list[tuple[CodeEntity, float]]:

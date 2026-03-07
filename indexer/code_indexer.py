@@ -6,7 +6,7 @@ from .entities import CodeEntity
 
 
 class CodeIndexer:
-    def __init__(self, model_name: str = "microsoft/codebert-base"):
+    def __init__(self, model_name: str = "microsoft/unixcoder-base"):
         self.python_parser = PythonParser()
         self.java_parser = JavaParser()
         self.encoder = SentenceTransformer(model_name)
