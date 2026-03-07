@@ -2,7 +2,9 @@
 
 import hashlib
 from pathlib import Path
-from tree_sitter_languages import get_parser
+import tree_sitter_javascript as tsjs
+import tree_sitter_typescript as tsts
+from tree_sitter import Language, Parser
 from .entities import CodeEntity, EntityType
 
 
@@ -10,8 +12,8 @@ class JsTsParser:
     """Parse JS/TS files using tree-sitter for accurate AST extraction."""
 
     def __init__(self):
-        self._js_parser = get_parser("javascript")
-        self._ts_parser = get_parser("typescript")
+        self._js_parser = Parser(Language(tsjs.language()))
+        self._ts_parser = Parser(Language(tsts.language_typescript()))
 
     def parse_file(self, file_path: Path) -> list[CodeEntity]:
         try:

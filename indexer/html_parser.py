@@ -3,7 +3,9 @@
 import re
 import hashlib
 from pathlib import Path
-from tree_sitter_languages import get_parser
+import tree_sitter_javascript as tsjs
+import tree_sitter_html as tshtml
+from tree_sitter import Language, Parser
 from .entities import CodeEntity, EntityType
 
 
@@ -11,8 +13,8 @@ class HtmlParser:
     """Parse HTML files to extract page components and inline JS functions."""
 
     def __init__(self):
-        self._html_parser = get_parser("html")
-        self._js_parser = get_parser("javascript")
+        self._html_parser = Parser(Language(tshtml.language()))
+        self._js_parser = Parser(Language(tsjs.language()))
 
     def parse_file(self, file_path: Path) -> list[CodeEntity]:
         try:
@@ -44,7 +46,7 @@ class HtmlParser:
 
     def _find_scripts(self, node, source, file_path, entities):
         if node.type == "script_element":
-            raw_text = node.child_by_field_name("raw_text")
+            raw_text = next((c for c in node.children if c.type == "raw_text"), None)
             if raw_text:
                 js_source = raw_text.text
                 js_tree = self._js_parser.parse(js_source)
