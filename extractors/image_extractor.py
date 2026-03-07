@@ -1,22 +1,20 @@
 """Extract fault context from screenshots."""
 
-import base64
 import json
-import re
 import boto3
 
 
 class ImageExtractor:
     """Extract error context from bug screenshots using vision LLM."""
 
-    def __init__(self, model_id: str = "anthropic.claude-3-5-sonnet-20241022-v2:0", region: str = "us-east-1"):
+    def __init__(self, model_id: str = "amazon.nova-pro-v1:0", region: str = "us-east-1"):
         self.client = boto3.client("bedrock-runtime", region_name=region)
         self.model_id = model_id
 
     def extract_from_image(self, image_path: str) -> dict:
         """
         Extract fault-relevant information from a screenshot.
-        
+
         Returns:
             {
                 "error_message": str,      # Any visible error text
@@ -28,7 +26,7 @@ class ImageExtractor:
             }
         """
         with open(image_path, "rb") as f:
-            image_data = base64.b64encode(f.read()).decode()
+            image_bytes = f.read()
 
         # Determine media type
         if image_path.endswith(".png"):
@@ -53,23 +51,19 @@ Extract the following information as JSON:
 Focus on information that would help a developer find the relevant code.
 If no error is visible, describe the UI state that appears broken."""
 
-        response = self.client.invoke_model(
+        response = self.client.converse(
             modelId=self.model_id,
-            body=json.dumps({
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": 1500,
-                "messages": [{
-                    "role": "user",
-                    "content": [
-                        {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": image_data}},
-                        {"type": "text", "text": prompt}
-                    ]
-                }]
-            })
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"image": {"format": media_type.split("/")[1], "source": {"bytes": image_bytes}}},
+                    {"text": prompt}
+                ]
+            }],
+            inferenceConfig={"maxTokens": 1500, "temperature": 0.2}
         )
 
-        result = json.loads(response["body"].read())
-        content = result["content"][0]["text"]
+        content = response["output"]["message"]["content"][0]["text"]
 
         # Parse JSON from response
         try:

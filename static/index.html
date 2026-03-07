@@ -67,7 +67,6 @@
     <div class="status-bar" id="statusBar">
         <span><span class="status-dot" id="healthDot"></span> <span id="healthText">Checking...</span></span>
         <span><span class="status-dot" id="osDot"></span> OpenSearch: <span id="osText">...</span></span>
-        <span>Entities: <span id="entityCount">...</span></span>
     </div>
 
     <div class="tabs">
@@ -159,11 +158,6 @@ async function checkHealth() {
         document.getElementById('osDot').className = 'status-dot ' + (d.opensearch === 'connected' ? 'green' : 'red');
         document.getElementById('healthText').textContent = d.status;
         document.getElementById('osText').textContent = d.opensearch;
-        try {
-            const s = await fetch(`${API}/stats`);
-            const sd = await s.json();
-            document.getElementById('entityCount').textContent = sd.indexed_entities ?? '—';
-        } catch(e) { document.getElementById('entityCount').textContent = '—'; }
     } catch(e) {
         document.getElementById('healthDot').className = 'status-dot red';
         document.getElementById('healthText').textContent = 'unreachable';
@@ -290,7 +284,7 @@ function pollJob(id, out) {
             const d = await r.json();
             out.innerHTML = `<div class="result-card">
                 <strong>Job ${d.job_id}</strong> — <span class="job-status ${d.status}">${d.status}</span>
-                <br>Entities: ${d.entities_indexed}${d.status === 'running' ? ' | Progress: '+(d.progress * 100).toFixed(0)+'%' : ''}
+                <br>Entities: ${d.entities_indexed}
                 ${d.error ? '<br><span style="color:#f85149;">'+escapeHtml(d.error)+'</span>' : ''}
             </div>`;
             if (d.status === 'completed' || d.status === 'failed') { clearInterval(poll); checkHealth(); }
