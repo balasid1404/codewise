@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CodeWise — Fault Localization</title>
+    <title>CodeWise — Code Intelligence</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f1117; color: #e1e4e8; min-height: 100vh; }
@@ -78,7 +78,7 @@
 <body>
 <div class="container">
     <h1>🔍 CodeWise</h1>
-    <p class="subtitle">AI-Powered Fault Localization</p>
+    <p class="subtitle">AI-Powered Code Intelligence & Fault Localization</p>
 
     <div class="status-bar" id="statusBar">
         <span><span class="status-dot" id="healthDot"></span> <span id="healthText">Checking...</span></span>
@@ -134,13 +134,30 @@
 
     <!-- Index Panel -->
     <div class="panel" id="indexPanel">
-        <div class="form-group">
-            <label>S3 URI</label>
-            <input type="text" id="s3Uri" placeholder="s3://fault-loc-codebase-650251724071/my-project/">
+        <div style="display:flex;gap:8px;margin-bottom:16px;">
+            <button class="btn btn-secondary" id="modeS3Btn" onclick="setIndexMode('s3')" style="border-color:#58a6ff;color:#58a6ff;">S3 URI</button>
+            <button class="btn btn-secondary" id="modeUploadBtn" onclick="setIndexMode('upload')">Upload Zip</button>
+        </div>
+        <div id="s3Mode">
+            <div class="form-group">
+                <label>S3 URI</label>
+                <input type="text" id="s3Uri" placeholder="s3://fault-loc-codebase-650251724071/my-project/">
+            </div>
+        </div>
+        <div id="uploadMode" style="display:none;">
+            <div class="form-group">
+                <label>Upload a zip file of your codebase</label>
+                <div class="drop-zone" id="zipDropZone" onclick="document.getElementById('zipFile').click()">
+                    <div id="zipDropText">📦 Click or drag a .zip file here</div>
+                    <div id="zipPreview"></div>
+                    <input type="file" id="zipFile" accept=".zip" style="display:none" onchange="handleZipSelect(this)">
+                </div>
+                <button class="btn-danger" id="clearZipBtn" style="display:none;margin-top:6px;" onclick="clearZip()">✕ Remove file</button>
+            </div>
         </div>
         <div class="form-group">
-            <label>Namespace <span style="color:#484f58;">(auto-derived from S3 folder name if empty)</span></label>
-            <input type="text" id="indexNamespace" placeholder="Leave empty to auto-derive from S3 path">
+            <label>Namespace <span style="color:#484f58;">(auto-derived from S3 folder or zip filename if empty)</span></label>
+            <input type="text" id="indexNamespace" placeholder="Leave empty to auto-derive">
         </div>
         <div class="form-group" style="display:flex;gap:12px;align-items:end;">
             <div style="flex:0 0 120px;">
@@ -150,6 +167,15 @@
             <button class="btn btn-primary" onclick="startIndex()">Start Indexing</button>
         </div>
         <div class="results" id="indexResults"></div>
+
+        <div style="margin-top:32px;padding-top:20px;border-top:1px solid #30363d;">
+            <label style="margin-bottom:8px;">Delete a namespace</label>
+            <div style="display:flex;gap:12px;align-items:center;">
+                <input type="text" id="deleteNsInput" placeholder="Namespace to delete" style="flex:1;">
+                <button class="btn btn-secondary" style="border-color:#f85149;color:#f85149;" onclick="deleteNamespace()">Delete</button>
+            </div>
+            <div id="deleteResult" style="margin-top:8px;font-size:0.85rem;"></div>
+        </div>
     </div>
 
     <!-- Jobs Panel -->
@@ -336,26 +362,110 @@ async function doLocalize() {
     }
 }
 
+// --- Index Mode Toggle ---
+let indexMode = 's3';
+let selectedZip = null;
+
+function setIndexMode(mode) {
+    indexMode = mode;
+    document.getElementById('s3Mode').style.display = mode === 's3' ? 'block' : 'none';
+    document.getElementById('uploadMode').style.display = mode === 'upload' ? 'block' : 'none';
+    document.getElementById('modeS3Btn').style.borderColor = mode === 's3' ? '#58a6ff' : '#30363d';
+    document.getElementById('modeS3Btn').style.color = mode === 's3' ? '#58a6ff' : '#c9d1d9';
+    document.getElementById('modeUploadBtn').style.borderColor = mode === 'upload' ? '#58a6ff' : '#30363d';
+    document.getElementById('modeUploadBtn').style.color = mode === 'upload' ? '#58a6ff' : '#c9d1d9';
+}
+
+function handleZipSelect(input) {
+    const file = input.files[0];
+    if (!file) return;
+    selectedZip = file;
+    document.getElementById('zipDropText').style.display = 'none';
+    document.getElementById('zipPreview').innerHTML = `<div style="color:#58a6ff;font-size:0.9rem;">📦 ${escapeHtml(file.name)}<br><span style="color:#8b949e;font-size:0.8rem;">${(file.size / 1024 / 1024).toFixed(1)} MB</span></div>`;
+    document.getElementById('clearZipBtn').style.display = 'inline-block';
+}
+
+function clearZip() {
+    selectedZip = null;
+    document.getElementById('zipFile').value = '';
+    document.getElementById('zipDropText').style.display = '';
+    document.getElementById('zipPreview').innerHTML = '';
+    document.getElementById('clearZipBtn').style.display = 'none';
+}
+
+const zdz = document.getElementById('zipDropZone');
+zdz.addEventListener('dragover', (e) => { e.preventDefault(); zdz.classList.add('dragover'); });
+zdz.addEventListener('dragleave', () => zdz.classList.remove('dragover'));
+zdz.addEventListener('drop', (e) => {
+    e.preventDefault(); zdz.classList.remove('dragover');
+    const file = e.dataTransfer.files[0];
+    if (file && file.name.endsWith('.zip')) {
+        const input = document.getElementById('zipFile');
+        const dt = new DataTransfer();
+        dt.items.add(file);
+        input.files = dt.files;
+        handleZipSelect(input);
+    }
+});
+
 // --- Index ---
 async function startIndex() {
     const out = document.getElementById('indexResults');
-    const uri = document.getElementById('s3Uri').value.trim();
     const ns = document.getElementById('indexNamespace').value.trim();
-    if (!uri) return;
-    out.innerHTML = '<div class="loading"><span class="spinner"></span>Starting indexing job...</div>';
+    const workers = parseInt(document.getElementById('workers').value);
+
+    if (indexMode === 'upload') {
+        if (!selectedZip) { alert('Please select a zip file'); return; }
+        out.innerHTML = '<div class="loading"><span class="spinner"></span>Uploading and starting indexing...</div>';
+        try {
+            const fd = new FormData();
+            fd.append('file', selectedZip);
+            fd.append('workers', workers);
+            if (ns) fd.append('namespace', ns);
+            const r = await fetch(`${API}/index/upload`, { method: 'POST', body: fd });
+            const d = await r.json();
+            if (d.detail) { out.innerHTML = `<div class="result-card" style="border-color:#f85149;">${escapeHtml(d.detail)}</div>`; return; }
+            out.innerHTML = `<div class="result-card"><strong>Job ${d.job_id}</strong> — ${d.status}<br><span style="color:#8b949e">${escapeHtml(d.message)}</span></div>`;
+            pollJob(d.job_id, out);
+        } catch(e) {
+            out.innerHTML = `<div class="result-card" style="border-color:#f85149;">Error: ${escapeHtml(e.message)}</div>`;
+        }
+    } else {
+        const uri = document.getElementById('s3Uri').value.trim();
+        if (!uri) { alert('Enter an S3 URI'); return; }
+        out.innerHTML = '<div class="loading"><span class="spinner"></span>Starting indexing job...</div>';
+        try {
+            const body = { s3_uri: uri, workers: workers };
+            if (ns) body.namespace = ns;
+            const r = await fetch(`${API}/index`, {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(body)
+            });
+            const d = await r.json();
+            if (d.detail) { out.innerHTML = `<div class="result-card" style="border-color:#f85149;">${escapeHtml(d.detail)}</div>`; return; }
+            out.innerHTML = `<div class="result-card"><strong>Job ${d.job_id}</strong> — ${d.status}<br><span style="color:#8b949e">${escapeHtml(d.message)}</span></div>`;
+            pollJob(d.job_id, out);
+        } catch(e) {
+            out.innerHTML = `<div class="result-card" style="border-color:#f85149;">Error: ${escapeHtml(e.message)}</div>`;
+        }
+    }
+}
+
+// --- Delete Namespace ---
+async function deleteNamespace() {
+    const ns = document.getElementById('deleteNsInput').value.trim();
+    const out = document.getElementById('deleteResult');
+    if (!ns) { alert('Enter a namespace to delete'); return; }
+    if (!confirm(`Delete all indexed entities for namespace "${ns}"? This cannot be undone.`)) return;
+    out.innerHTML = '<span class="spinner"></span> Deleting...';
     try {
-        const body = { s3_uri: uri, workers: parseInt(document.getElementById('workers').value) };
-        if (ns) body.namespace = ns;
-        const r = await fetch(`${API}/index`, {
-            method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(body)
-        });
+        const r = await fetch(`${API}/namespaces/${encodeURIComponent(ns)}`, { method: 'DELETE' });
         const d = await r.json();
-        if (d.detail) { out.innerHTML = `<div class="result-card" style="border-color:#f85149;">${escapeHtml(d.detail)}</div>`; return; }
-        out.innerHTML = `<div class="result-card"><strong>Job ${d.job_id}</strong> — ${d.status}<br><span style="color:#8b949e">${escapeHtml(d.message)}</span></div>`;
-        pollJob(d.job_id, out);
+        if (d.detail) { out.innerHTML = `<span style="color:#f85149;">${escapeHtml(d.detail)}</span>`; return; }
+        out.innerHTML = `<span style="color:#3fb950;">✓ ${escapeHtml(d.message)}</span>`;
+        document.getElementById('deleteNsInput').value = '';
     } catch(e) {
-        out.innerHTML = `<div class="result-card" style="border-color:#f85149;">Error: ${escapeHtml(e.message)}</div>`;
+        out.innerHTML = `<span style="color:#f85149;">Error: ${escapeHtml(e.message)}</span>`;
     }
 }
 

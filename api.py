@@ -3,6 +3,8 @@
 import os
 import uuid
 import tempfile
+import zipfile
+import shutil
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks, UploadFile, File, Form
 from fastapi.staticfiles import StaticFiles
@@ -168,6 +170,63 @@ async def index_codebase(request: IndexRequest):
         job_id=job_id,
         status="started",
         message=f"Indexing started for {source}"
+    )
+
+
+@app.post("/index/upload", response_model=IndexJobResponse)
+async def index_from_upload(
+    file: UploadFile = File(...),
+    namespace: str = Form(""),
+    workers: int = Form(4),
+):
+    """Index codebase from uploaded zip file. Extracts to temp dir, indexes, then cleans up."""
+    if not localizer:
+        raise HTTPException(status_code=503, detail="OpenSearch not available")
+
+    if not file.filename or not file.filename.endswith(".zip"):
+        raise HTTPException(status_code=400, detail="Please upload a .zip file")
+
+    # Derive namespace from zip filename if not provided
+    ns = namespace.strip() or Path(file.filename).stem
+
+    # Save uploaded zip to temp file
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp:
+        content = await file.read()
+        tmp.write(content)
+        zip_path = tmp.name
+
+    job_id = str(uuid.uuid4())[:8]
+    source = f"upload:{file.filename}"
+
+    def do_index(progress_callback=None):
+        extract_dir = tempfile.mkdtemp(prefix="codewise_upload_")
+        try:
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                zf.extractall(extract_dir)
+
+            # If zip contains a single top-level folder, use that
+            entries = os.listdir(extract_dir)
+            if len(entries) == 1 and os.path.isdir(os.path.join(extract_dir, entries[0])):
+                index_path = os.path.join(extract_dir, entries[0])
+            else:
+                index_path = extract_dir
+
+            count = localizer.index_codebase(index_path, workers, namespace=ns)
+
+            if cache:
+                cache.invalidate()
+
+            return count
+        finally:
+            shutil.rmtree(extract_dir, ignore_errors=True)
+            os.unlink(zip_path)
+
+    background_indexer.start_job(job_id, source, do_index)
+
+    return IndexJobResponse(
+        job_id=job_id,
+        status="started",
+        message=f"Indexing started for {file.filename} (namespace: {ns})"
     )
 
 
@@ -399,6 +458,22 @@ async def search_namespaces(q: str = "", limit: int = 10):
         raise HTTPException(status_code=503, detail="OpenSearch not available")
     try:
         return {"namespaces": localizer.store.search_namespaces(q, limit)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/namespaces/{namespace}")
+async def delete_namespace(namespace: str):
+    """Delete all indexed entities for a namespace."""
+    if not localizer:
+        raise HTTPException(status_code=503, detail="OpenSearch not available")
+    try:
+        result = localizer.store.client.delete_by_query(
+            index="code_entities",
+            body={"query": {"term": {"namespace": namespace}}}
+        )
+        deleted = result.get("deleted", 0)
+        return {"namespace": namespace, "deleted": deleted, "message": f"Deleted {deleted} entities from namespace '{namespace}'"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

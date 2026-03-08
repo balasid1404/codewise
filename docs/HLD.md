@@ -528,6 +528,7 @@ After initial index, incremental updates (per git push) take seconds.
 | Graph expansion | 50ms |
 | LLM re-ranking | 1–2s |
 | **Total (stack trace)** | **~2s** |
+| **Total (NL query)** | **~1.5s** |
 | **Total (image)** | **~3s** |
 | **Total (unified)** | **~3.5s** |
 
@@ -561,6 +562,8 @@ After initial index, incremental updates (per git push) take seconds.
 | 16 parallel S3 download threads | Each thread gets its own boto3 client for thread safety; saturates network bandwidth |
 | Embedding batch size 256 | Maximizes CPU/GPU utilization for CodeBERT encoding; larger batches = fewer forward passes |
 | Deduplicate by name + signature + line | Prevents duplicate results when same entity matches multiple search strategies |
+| Dual-mode LLM prompts | NL queries get a relevance-ranking prompt; stack traces get a fault-localization prompt; same ranker, different framing |
+| Raw query text for NL search | Stack traces build structured queries (`exception + message + methods`); NL queries use the raw text directly for better semantic matching |
 
 ---
 
