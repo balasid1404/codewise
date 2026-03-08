@@ -172,21 +172,29 @@ class FaultLocalizerProd:
         return total_indexed[0]
 
     def localize(self, error_text: str, top_k: int = 5, namespace: str = None) -> list[dict]:
-        """Localize fault from stack trace. Namespace auto-detected from file paths if not provided."""
+        """Localize fault from stack trace or answer natural language code questions."""
         error = self._extract_error(error_text)
+        is_nl_query = error.exception_type in ("NLQuery", "Unknown") and not error.frames
 
         # Auto-detect namespace from stack trace file paths
         if not namespace:
             namespace = self._detect_namespace(error)
 
-        query = f"{error.exception_type} {error.message} {' '.join(error.method_names)}"
+        if is_nl_query:
+            # Natural language query — use raw text directly as search query
+            query = error_text.strip()
+        else:
+            # Stack trace — build structured query from extracted info
+            query = f"{error.exception_type} {error.message} {' '.join(error.method_names)}"
+
         query_embedding = self.encoder.encode(query).tolist()
 
         direct_candidates = []
-        for frame in error.frames:
-            entities = self.store.get_by_name(frame.method_name, namespace=namespace)
-            for entity in entities:
-                direct_candidates.append((entity, 1.0))
+        if not is_nl_query:
+            for frame in error.frames:
+                entities = self.store.get_by_name(frame.method_name, namespace=namespace)
+                for entity in entities:
+                    direct_candidates.append((entity, 1.0))
 
         search_results = self.store.search_hybrid(query, query_embedding, top_k=50, namespace=namespace)
         all_candidates = self._merge_candidates(direct_candidates, search_results)
@@ -281,12 +289,19 @@ class FaultLocalizerProd:
         # Text-based search
         if error_text:
             error = self._extract_error(error_text)
-            text_query = f"{error.exception_type} {error.message} {' '.join(error.method_names)}"
+            is_nl_query = error.exception_type in ("NLQuery", "Unknown") and not error.frames
+
+            if is_nl_query:
+                text_query = error_text.strip()
+            else:
+                text_query = f"{error.exception_type} {error.message} {' '.join(error.method_names)}"
+
             text_embedding = self.encoder.encode(text_query).tolist()
 
-            for frame in error.frames:
-                for entity in self.store.get_by_name(frame.method_name, namespace=namespace):
-                    all_candidates.append((entity, 1.0))
+            if not is_nl_query:
+                for frame in error.frames:
+                    for entity in self.store.get_by_name(frame.method_name, namespace=namespace):
+                        all_candidates.append((entity, 1.0))
 
             all_candidates.extend(self.store.search_hybrid(text_query, text_embedding, top_k=50, namespace=namespace))
 
@@ -311,10 +326,12 @@ class FaultLocalizerProd:
             if image_extracted:
                 context_parts.append(f"UI: {image_extracted.get('app_section', '')} | {image_extracted.get('error_message', '')} | Elements: {image_extracted.get('ui_elements', [])}")
 
+            # Determine query type for LLM prompt selection
+            has_stack_trace = error_text and self._extract_error(error_text).frames
             pseudo_error = ExtractedError(
-                exception_type="Fault" if error_text else "UI Bug",
+                exception_type="Fault" if has_stack_trace else ("UI Bug" if image_extracted and not error_text else "NLQuery"),
                 message=" | ".join(context_parts)[:300],
-                frames=self._extract_error(error_text).frames if error_text else [],
+                frames=self._extract_error(error_text).frames if has_stack_trace else [],
                 raw_text="\n".join(context_parts)
             )
             results = self.ranker.rank_and_explain(pseudo_error, merged, top_k)

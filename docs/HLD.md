@@ -1,25 +1,25 @@
-# High-Level Design: CodeWise — Fault Localization System
+# High-Level Design: CodeWise — Code Intelligence & Fault Localization System
 
 ## 1. Overview
 
-An AI-powered fault localization system that identifies buggy code locations from stack traces, screenshots, or natural language queries. Designed for enterprise-scale codebases (30M+ entities, 10K+ repositories) with multi-org namespace isolation.
+An AI-powered code intelligence system that helps developers locate relevant code — whether debugging from stack traces and screenshots, or asking natural language questions like "where should I add rate limiting?" or "which service handles payment retries?". Designed for enterprise-scale codebases (30M+ entities, 10K+ repositories) with multi-org namespace isolation.
 
 ### 1.1 Problem Statement
 
-Developers spend significant time locating the root cause of bugs. Traditional approaches require:
-- Manual stack trace analysis
-- Code navigation across large codebases
-- Domain knowledge of system architecture
-- Knowing which team/org owns the relevant code
+Developers spend significant time finding the right code to look at. This applies to:
+- Debugging: tracing stack traces and error screenshots to root cause
+- Feature work: figuring out where to make changes in an unfamiliar codebase
+- Code navigation: understanding which components handle a given concern
+- Cross-team discovery: knowing which team/org owns the relevant code
 
 ### 1.2 Solution
 
-Automated fault localization using:
+AI-powered code search and localization using:
 - Namespace-scoped search (auto-detected or user-selected)
-- Hybrid retrieval (BM25 + semantic embeddings)
-- Call graph analysis for root cause detection
+- Hybrid retrieval (BM25 + semantic embeddings) for both error traces and natural language queries
+- Call graph analysis for root cause detection and change impact understanding
 - Vision LLM for screenshot-based localization (Amazon Nova Pro)
-- LLM re-ranking for accuracy
+- LLM re-ranking with contextual explanations
 - Multi-language support (Python, Java, JavaScript, TypeScript, HTML)
 
 ---
@@ -39,7 +39,7 @@ User → ALB → Single Fargate Task (1 vCPU, 6GB) → Self-hosted OpenSearch (F
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
 │                          Input Layer                                  │
-│   Stack Trace  │  Screenshot (PNG/JPG)  │  Natural Language Query     │
+│   Stack Trace  │  Screenshot  │  NL Query ("where to change X?")     │
 └────────────────────────────┬─────────────────────────────────────────┘
                              │
 ┌────────────────────────────▼─────────────────────────────────────────┐
@@ -57,9 +57,10 @@ User → ALB → Single Fargate Task (1 vCPU, 6GB) → Self-hosted OpenSearch (F
 │  │     • Fallback: searchable typeahead (user picks)               │  │
 │  └─────────────────────────────────────────────────────────────────┘  │
 │  ┌─────────────────────────────────────────────────────────────────┐  │
-│  │  2. Extraction                                                  │  │
+│  │  2. Extraction + Query Understanding                             │  │
 │  │     • Python/Java stack trace parsing                           │  │
 │  │     • Vision LLM extraction (Nova Pro)                          │  │
+│  │     • NL query → semantic search terms                          │  │
 │  │     • UI element → code pattern mapping                         │  │
 │  └─────────────────────────────────────────────────────────────────┘  │
 │  ┌─────────────────────────────────────────────────────────────────┐  │
@@ -111,7 +112,7 @@ User → ALB → Single Fargate Task (1 vCPU, 6GB) → Self-hosted OpenSearch (F
 
 ### 3.1 Concept
 
-At enterprise scale (30M+ entities across 10K+ repos), search must be scoped. A bug in Amazon Music shouldn't return results from Prime Video's codebase.
+At enterprise scale (30M+ entities across 10K+ repos), search must be scoped. A question about Amazon Music's payment flow shouldn't return results from Prime Video's codebase.
 
 Every indexed entity gets a `namespace` field. Queries are filtered by namespace before search.
 
@@ -187,7 +188,7 @@ class StackFrame:
 
 ### 4.2 Code Indexer
 
-Parses source code and generates searchable entities.
+Parses source code and generates searchable entities via a 3-stage parallel pipeline.
 
 **Supported Languages:**
 
@@ -201,7 +202,33 @@ Parses source code and generates searchable entities.
 
 **Embeddings:** CodeBERT (`microsoft/codebert-base`, 768 dimensions)
 
-### 4.3 Storage (OpenSearch)
+### 4.3 Indexing Pipeline (3-Stage Parallel)
+
+All 3 stages run concurrently, connected by bounded queues. No stage waits for another to finish — parsing, embedding, and indexing overlap in time.
+
+```
+┌─────────────────────┐     Queue      ┌─────────────────────┐     Queue      ┌─────────────────────┐
+│  Stage 1: PARSE     │───(50 batch)──▶│  Stage 2: EMBED     │──(256 batch)──▶│  Stage 3: INDEX     │
+│                     │                │                     │                │                     │
+│  N threads parse    │                │  Batched CodeBERT   │                │  Bulk upsert to     │
+│  files concurrently │                │  encoding (256/     │                │  OpenSearch (500/   │
+│  via ThreadPool     │                │  batch for max      │                │  batch)             │
+│                     │                │  throughput)        │                │                     │
+│  Output: entities   │                │  Output: entities   │                │  Output: indexed    │
+│  with namespace     │                │  with embeddings    │                │  in OpenSearch      │
+└─────────────────────┘                └─────────────────────┘                └─────────────────────┘
+```
+
+**S3 Downloads:** 16 parallel threads (each with its own boto3 client for thread safety)
+
+**Why this design:**
+- Stage 1 (Parse) is CPU-bound per file but embarrassingly parallel across files
+- Stage 2 (Embed) benefits from large batches (256) for GPU/CPU utilization
+- Stage 3 (Index) is I/O-bound (network to OpenSearch)
+- Bounded queues (64 and 32) limit memory usage at scale
+- At 30M entities, just add more parse workers and swap CPU for GPU — pipeline structure stays the same
+
+### 4.4 Storage (OpenSearch)
 
 **Prototype:** Self-hosted OpenSearch 2.11 container on Fargate
 **Production:** Managed AWS OpenSearch Service, 3x r6g.2xlarge
@@ -211,7 +238,7 @@ Parses source code and generates searchable entities.
 - HNSW vector index for semantic search (nmslib engine, cosine similarity)
 - Namespace keyword field for scoped filtering
 
-### 4.4 Call Graph
+### 4.5 Call Graph
 
 Tracks method call relationships for root cause expansion.
 
@@ -223,7 +250,7 @@ Call graph: processPayment() → validate()
 Root cause likely in: processPayment()
 ```
 
-### 4.5 UI Mapper
+### 4.6 UI Mapper
 
 Converts UI elements to code patterns for image-based localization.
 
@@ -232,18 +259,20 @@ Converts UI elements to code patterns for image-based localization.
 "Checkout" page → ["checkout", "cart", "order"]
 ```
 
-### 4.6 LLM Ranker
+### 4.7 LLM Ranker
 
 Re-ranks candidates using contextual understanding via Amazon Nova Pro (Bedrock Converse API).
 
-**Input:** Error context + top-20 candidates
+**Input:** Query context (error details, natural language question, or image extraction) + top-20 candidates
 **Output:** Top-5 ranked with explanations and confidence scores
+
+Works for both fault localization ("where is this bug?") and code navigation ("where should I change X?").
 
 ---
 
 ## 5. Data Flow
 
-### 5.1 Stack Trace Flow
+### 5.1 Stack Trace Flow (Fault Localization)
 
 ```
 1. Input: Stack trace text
@@ -257,28 +286,39 @@ Re-ranks candidates using contextual understanding via Amazon Nova Pro (Bedrock 
 9. Output: Top-K fault locations
 ```
 
-### 5.2 Image Flow
+### 5.2 Natural Language Query Flow (Code Navigation)
 
 ```
-1. Input: Screenshot of bug
+1. Input: "Where should I add rate limiting?" or "Which code handles payment retries?"
+2. Namespace: User-selected via typeahead, or auto-detected from keywords
+3. Hybrid search: BM25 + vector search on the query text (scoped by namespace)
+4. Graph expansion: Find related callers/callees for broader context
+5. LLM re-rank: Rank candidates by relevance to the question, explain why each is relevant
+6. Output: Top-K code locations with explanations
+```
+
+### 5.3 Image Flow
+
+```
+1. Input: Screenshot of bug or UI
 2. Vision LLM: Extract error text, UI elements, app section, namespace hint
 3. Namespace: Use LLM-detected app name, or fallback to typeahead
 4. UI Mapper: Convert UI elements to code patterns
 5. Search: Query OpenSearch with patterns (scoped by namespace)
 6. LLM re-rank: Rank with UI context
-7. Output: Top-K fault locations
+7. Output: Top-K code locations
 ```
 
-### 5.3 Unified Flow (Text + Image)
+### 5.4 Unified Flow (Text + Image)
 
 ```
-1. Input: Text (stack trace / query) + optional screenshot
+1. Input: Text (stack trace / NL query) + optional screenshot
 2. Namespace: Auto-detect from text paths, or image app name, or typeahead
 3. Extract both: Parse text + Vision LLM on image
 4. Combined search: Merge candidates from text search + image search
 5. Deduplicate by entity identity (name + signature + line)
 6. LLM re-rank with combined context
-7. Output: Top-K fault locations + image extraction JSON
+7. Output: Top-K code locations + image extraction JSON
 ```
 
 ---
@@ -297,13 +337,14 @@ Re-ranks candidates using contextual understanding via Amazon Nova Pro (Bedrock 
 
 ### 6.2 Scaling Strategy
 
-**Indexing:**
-- Event-driven via SQS (git push → queue → worker)
-- 16–32 parallel Fargate workers
-- GPU instances for embedding generation (p3.2xlarge or g5.xlarge)
-- Alternative: Bedrock Titan Embeddings API (no GPU infra needed)
+**Indexing (3-Stage Pipeline):**
+- Stage 1 (Parse): N parallel threads per worker, scales horizontally with more Fargate tasks
+- Stage 2 (Embed): Batched encoding (256 entities/batch), swap CPU for GPU at scale (p3.2xlarge or g5.xlarge), or use Bedrock Titan Embeddings API
+- Stage 3 (Index): Bulk upsert to OpenSearch (500 docs/batch), I/O-bound
+- All stages run concurrently via bounded queues — no stage blocks another
+- Event-driven via SQS (git push → queue → worker) for incremental updates
+- S3 downloads: 16 parallel threads per worker
 - Incremental only after initial full index (hash-based change detection)
-- Batch processing (500 entities/batch to OpenSearch)
 
 **Storage:**
 - Managed AWS OpenSearch cluster (3+ data nodes, r6g.2xlarge)
@@ -494,9 +535,10 @@ After initial index, incremental updates (per git push) take seconds.
 
 | Metric | Target |
 |--------|--------|
-| Top-1 accuracy | 60% |
-| Top-5 accuracy | 85% |
-| Top-10 accuracy | 95% |
+| Top-1 accuracy (fault localization) | 60% |
+| Top-5 accuracy (fault localization) | 85% |
+| Top-5 relevance (NL queries) | 80% |
+| Top-10 accuracy (all query types) | 95% |
 | Namespace auto-detection | 90%+ (from stack traces) |
 
 ---
@@ -515,6 +557,10 @@ After initial index, incremental updates (per git push) take seconds.
 | SQS for indexing triggers | Decouples git events from indexing; handles burst; retry built-in |
 | Incremental indexing | Full reindex of 30M entities takes hours; incremental takes seconds |
 | CodeBERT embeddings | Best code-specific embedding model; 768-dim balances quality vs storage |
+| 3-stage parallel pipeline | Parse → Embed → Index run concurrently via bounded queues; no stage blocks another; maximizes throughput |
+| 16 parallel S3 download threads | Each thread gets its own boto3 client for thread safety; saturates network bandwidth |
+| Embedding batch size 256 | Maximizes CPU/GPU utilization for CodeBERT encoding; larger batches = fewer forward passes |
+| Deduplicate by name + signature + line | Prevents duplicate results when same entity matches multiple search strategies |
 
 ---
 

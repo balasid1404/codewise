@@ -15,7 +15,8 @@ class LLMRanker:
         candidates: list[tuple[CodeEntity, float]],
         top_k: int = 5
     ) -> list[dict]:
-        prompt = self._build_prompt(error, candidates)
+        is_nl_query = error.exception_type in ("NLQuery", "Unknown") and not error.frames
+        prompt = self._build_nl_prompt(error, candidates) if is_nl_query else self._build_prompt(error, candidates)
 
         body = {
             "messages": [{"role": "user", "content": [{"text": prompt}]}],
@@ -30,6 +31,32 @@ class LLMRanker:
 
         content = response["output"]["message"]["content"][0]["text"]
         return self._parse_response(content, candidates, top_k)
+
+    def _build_nl_prompt(self, error: ExtractedError, candidates: list[tuple[CodeEntity, float]]) -> str:
+        candidate_text = "\n\n".join([
+            f"[{i}] {e.full_name} ({e.file_path}:{e.start_line})\n```\n{e.signature}\n{e.body[:500]}...\n```"
+            for i, (e, _) in enumerate(candidates[:15])
+        ])
+
+        return f"""You are a code navigation expert. A developer is asking a question about their codebase. Rank the candidate code locations by relevance to their question.
+
+DEVELOPER QUESTION:
+{error.raw_text}
+
+CANDIDATE CODE LOCATIONS:
+{candidate_text}
+
+Respond with JSON array of top 5 most relevant code locations:
+[
+  {{"index": 0, "confidence": 0.9, "reason": "brief explanation of why this code is relevant"}},
+  ...
+]
+
+Consider:
+1. Which methods/classes directly implement the functionality the developer is asking about
+2. Entry points and core logic are more useful than utility helpers
+3. Prefer methods whose names and signatures clearly relate to the question
+4. Consider the file path — it often reveals the module's purpose"""
 
     def _build_prompt(self, error: ExtractedError, candidates: list[tuple[CodeEntity, float]]) -> str:
         candidate_text = "\n\n".join([
