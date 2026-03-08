@@ -18,8 +18,15 @@ class OpenSearchStore(VectorStore):
         self._ensure_index()
 
     def _ensure_index(self):
-        if not self.client.indices.exists(index=self.INDEX_NAME):
-            self.client.indices.create(
+        if self.client.indices.exists(index=self.INDEX_NAME):
+            # Check if namespace field exists in mapping; if not, recreate index
+            mapping = self.client.indices.get_mapping(index=self.INDEX_NAME)
+            props = mapping.get(self.INDEX_NAME, {}).get("mappings", {}).get("properties", {})
+            if "namespace" not in props:
+                self.client.indices.delete(index=self.INDEX_NAME)
+            else:
+                return
+        self.client.indices.create(
                 index=self.INDEX_NAME,
                 body={
                     "settings": {
@@ -28,6 +35,7 @@ class OpenSearchStore(VectorStore):
                     "mappings": {
                         "properties": {
                             "id": {"type": "keyword"},
+                            "namespace": {"type": "keyword"},
                             "name": {"type": "keyword"},
                             "full_name": {"type": "keyword"},
                             "entity_type": {"type": "keyword"},
@@ -59,6 +67,7 @@ class OpenSearchStore(VectorStore):
                 "_id": entity.id,
                 "_source": {
                     "id": entity.id,
+                    "namespace": entity.namespace or "default",
                     "name": entity.name,
                     "full_name": entity.full_name,
                     "entity_type": entity.entity_type.value,
@@ -87,34 +96,44 @@ class OpenSearchStore(VectorStore):
         self.client.indices.refresh(index=self.INDEX_NAME)
         return len(entities)
 
-    def search_bm25(self, query: str, top_k: int = 100) -> list[tuple[CodeEntity, float]]:
-        response = self.client.search(
-            index=self.INDEX_NAME,
-            body={
-                "size": top_k,
-                "query": {
-                    "multi_match": {
-                        "query": query,
-                        "fields": ["search_text^3", "signature^2", "name^2", "body", "docstring"]
-                    }
+    def search_bm25(self, query: str, top_k: int = 100, namespace: str = None) -> list[tuple[CodeEntity, float]]:
+        body = {
+            "size": top_k,
+            "query": {
+                "multi_match": {
+                    "query": query,
+                    "fields": ["search_text^3", "signature^2", "name^2", "body", "docstring"]
                 }
             }
-        )
-        return self._hits_to_entities(response["hits"]["hits"])
-
-    def search_vector(self, embedding: list[float], top_k: int = 20) -> list[tuple[CodeEntity, float]]:
-        response = self.client.search(
-            index=self.INDEX_NAME,
-            body={
-                "size": top_k,
-                "query": {"knn": {"embedding": {"vector": embedding, "k": top_k}}}
+        }
+        if namespace:
+            body["query"] = {
+                "bool": {
+                    "must": body["query"],
+                    "filter": {"term": {"namespace": namespace}}
+                }
             }
-        )
+        response = self.client.search(index=self.INDEX_NAME, body=body)
         return self._hits_to_entities(response["hits"]["hits"])
 
-    def search_hybrid(self, query: str, embedding: list[float], top_k: int = 20, bm25_weight: float = 0.4) -> list[tuple[CodeEntity, float]]:
+    def search_vector(self, embedding: list[float], top_k: int = 20, namespace: str = None) -> list[tuple[CodeEntity, float]]:
+        body = {
+            "size": top_k,
+            "query": {"knn": {"embedding": {"vector": embedding, "k": top_k}}}
+        }
+        if namespace:
+            body["query"] = {
+                "bool": {
+                    "must": body["query"],
+                    "filter": {"term": {"namespace": namespace}}
+                }
+            }
+        response = self.client.search(index=self.INDEX_NAME, body=body)
+        return self._hits_to_entities(response["hits"]["hits"])
+
+    def search_hybrid(self, query: str, embedding: list[float], top_k: int = 20, bm25_weight: float = 0.4, namespace: str = None) -> list[tuple[CodeEntity, float]]:
         # BM25 first pass
-        bm25_results = self.search_bm25(query, top_k=100)
+        bm25_results = self.search_bm25(query, top_k=100, namespace=namespace)
         if not bm25_results:
             return []
 
@@ -122,6 +141,10 @@ class OpenSearchStore(VectorStore):
         ids = [e.id for e, _ in bm25_results]
 
         # Vector search on BM25 candidates
+        filter_clauses = [{"terms": {"id": ids}}]
+        if namespace:
+            filter_clauses.append({"term": {"namespace": namespace}})
+
         response = self.client.search(
             index=self.INDEX_NAME,
             body={
@@ -129,7 +152,7 @@ class OpenSearchStore(VectorStore):
                 "query": {
                     "bool": {
                         "must": {"knn": {"embedding": {"vector": embedding, "k": top_k * 2}}},
-                        "filter": {"terms": {"id": ids}}
+                        "filter": filter_clauses
                     }
                 }
             }
@@ -143,22 +166,61 @@ class OpenSearchStore(VectorStore):
         )
         return [e for e, _ in self._hits_to_entities(response["hits"]["hits"])]
 
-    def get_by_name(self, name: str) -> list[CodeEntity]:
+    def get_by_name(self, name: str, namespace: str = None) -> list[CodeEntity]:
+        query = {
+            "bool": {
+                "should": [
+                    {"term": {"name": name}},
+                    {"wildcard": {"full_name": f"*{name}"}}
+                ]
+            }
+        }
+        if namespace:
+            query = {"bool": {"must": query, "filter": {"term": {"namespace": namespace}}}}
+        response = self.client.search(
+            index=self.INDEX_NAME,
+            body={"size": 100, "query": query}
+        )
+        return [e for e, _ in self._hits_to_entities(response["hits"]["hits"])]
+
+    def list_namespaces(self) -> list[dict]:
+        """List all indexed namespaces with entity counts."""
         response = self.client.search(
             index=self.INDEX_NAME,
             body={
-                "size": 100,
-                "query": {
-                    "bool": {
-                        "should": [
-                            {"term": {"name": name}},
-                            {"wildcard": {"full_name": f"*{name}"}}
-                        ]
+                "size": 0,
+                "aggs": {
+                    "namespaces": {
+                        "terms": {"field": "namespace", "size": 10000}
                     }
                 }
             }
         )
-        return [e for e, _ in self._hits_to_entities(response["hits"]["hits"])]
+        return [
+            {"namespace": b["key"], "count": b["doc_count"]}
+            for b in response["aggregations"]["namespaces"]["buckets"]
+        ]
+
+    def search_namespaces(self, query: str, limit: int = 10) -> list[dict]:
+        """Search namespaces by prefix for typeahead autocomplete."""
+        response = self.client.search(
+            index=self.INDEX_NAME,
+            body={
+                "size": 0,
+                "aggs": {
+                    "namespaces": {
+                        "terms": {"field": "namespace", "size": 10000}
+                    }
+                }
+            }
+        )
+        q = query.lower()
+        matches = [
+            {"namespace": b["key"], "count": b["doc_count"]}
+            for b in response["aggregations"]["namespaces"]["buckets"]
+            if q in b["key"].lower()
+        ]
+        return matches[:limit]
 
     def _hits_to_entities(self, hits: list) -> list[tuple[CodeEntity, float]]:
         results = []
@@ -177,7 +239,8 @@ class OpenSearchStore(VectorStore):
                 package=src.get("package"),
                 docstring=src.get("docstring"),
                 embedding=src.get("embedding"),
-                calls=src.get("calls", [])
+                calls=src.get("calls", []),
+                namespace=src.get("namespace"),
             )
             results.append((entity, hit["_score"]))
         return results

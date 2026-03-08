@@ -29,9 +29,11 @@ class FaultLocalizerProd:
         self.ranker = LLMRanker() if use_llm else None
         self.use_llm = use_llm
 
-    def index_codebase(self, path: str, workers: int = 4) -> int:
-        """Index codebase with parallel workers."""
+    def index_codebase(self, path: str, workers: int = 4, namespace: str = None) -> int:
+        """Index codebase with parallel workers. Namespace auto-derived from path if not provided."""
         codebase = Path(path)
+        if not namespace:
+            namespace = codebase.name  # Use folder name as namespace
         indexer = CodeIndexer(model_name="microsoft/codebert-base")
 
         py_files = list(codebase.rglob("*.py"))
@@ -67,6 +69,7 @@ class FaultLocalizerProd:
                 embeddings = self.encoder.encode(texts, show_progress_bar=False)
                 for entity, emb in zip(entities, embeddings):
                     entity.embedding = emb.tolist()
+                    entity.namespace = namespace
 
             return entities
 
@@ -87,20 +90,24 @@ class FaultLocalizerProd:
 
         return total_indexed
 
-    def localize(self, error_text: str, top_k: int = 5) -> list[dict]:
-        """Localize fault from stack trace."""
+    def localize(self, error_text: str, top_k: int = 5, namespace: str = None) -> list[dict]:
+        """Localize fault from stack trace. Namespace auto-detected from file paths if not provided."""
         error = self._extract_error(error_text)
+
+        # Auto-detect namespace from stack trace file paths
+        if not namespace:
+            namespace = self._detect_namespace(error)
 
         query = f"{error.exception_type} {error.message} {' '.join(error.method_names)}"
         query_embedding = self.encoder.encode(query).tolist()
 
         direct_candidates = []
         for frame in error.frames:
-            entities = self.store.get_by_name(frame.method_name)
+            entities = self.store.get_by_name(frame.method_name, namespace=namespace)
             for entity in entities:
                 direct_candidates.append((entity, 1.0))
 
-        search_results = self.store.search_hybrid(query, query_embedding, top_k=50)
+        search_results = self.store.search_hybrid(query, query_embedding, top_k=50, namespace=namespace)
         all_candidates = self._merge_candidates(direct_candidates, search_results)
 
         if self.use_llm and self.ranker:
@@ -108,10 +115,14 @@ class FaultLocalizerProd:
         else:
             return [{"entity": e, "score": s, "reason": ""} for e, s in all_candidates[:top_k]]
 
-    def localize_from_image(self, image_path: str, top_k: int = 5, context: str = "") -> list[dict]:
+    def localize_from_image(self, image_path: str, top_k: int = 5, context: str = "", namespace: str = None) -> list[dict]:
         """Localize fault from a screenshot."""
         # 1. Extract context from image using vision LLM
         extracted = self.image_extractor.extract_from_image(image_path, context=context)
+
+        # Auto-detect namespace from image extraction if not provided
+        if not namespace:
+            namespace = self._detect_namespace_from_image(extracted)
 
         # 2. Map UI elements to code patterns
         search_context = self.ui_mapper.build_search_context(extracted)
@@ -132,12 +143,12 @@ class FaultLocalizerProd:
 
         # Search by code patterns (high priority)
         for pattern in search_context["code_patterns"][:20]:
-            entities = self.store.get_by_name(pattern)
+            entities = self.store.get_by_name(pattern, namespace=namespace)
             for entity in entities:
                 candidates.append((entity, 0.9))
 
         # Hybrid search for broader results
-        search_results = self.store.search_hybrid(query, query_embedding, top_k=50)
+        search_results = self.store.search_hybrid(query, query_embedding, top_k=50, namespace=namespace)
         candidates.extend(search_results)
 
         # Dedupe and sort
@@ -160,7 +171,7 @@ class FaultLocalizerProd:
                 "reason": "",
                 "image_context": extracted
             } for e, s in all_candidates[:top_k]]
-    def localize_unified(self, error_text: str = "", image_path: str = "", top_k: int = 5) -> dict:
+    def localize_unified(self, error_text: str = "", image_path: str = "", top_k: int = 5, namespace: str = None) -> dict:
         """Unified localization: text + optional image. Returns results and image extraction data."""
         image_extracted = None
         image_query_parts = []
@@ -174,6 +185,14 @@ class FaultLocalizerProd:
                 image_query_parts.append(search_context["error_text"])
             if search_context["context"]:
                 image_query_parts.append(search_context["context"])
+            # Auto-detect namespace from image if not provided
+            if not namespace:
+                namespace = self._detect_namespace_from_image(image_extracted)
+
+        # Auto-detect namespace from text if still not set
+        if not namespace and error_text:
+            error = self._extract_error(error_text)
+            namespace = self._detect_namespace(error)
 
         # Build combined query
         all_candidates = []
@@ -185,10 +204,10 @@ class FaultLocalizerProd:
             text_embedding = self.encoder.encode(text_query).tolist()
 
             for frame in error.frames:
-                for entity in self.store.get_by_name(frame.method_name):
+                for entity in self.store.get_by_name(frame.method_name, namespace=namespace):
                     all_candidates.append((entity, 1.0))
 
-            all_candidates.extend(self.store.search_hybrid(text_query, text_embedding, top_k=50))
+            all_candidates.extend(self.store.search_hybrid(text_query, text_embedding, top_k=50, namespace=namespace))
 
         # Image-based search
         if image_query_parts:
@@ -196,10 +215,10 @@ class FaultLocalizerProd:
             img_embedding = self.encoder.encode(img_query).tolist()
 
             for pattern in image_query_parts[:20]:
-                for entity in self.store.get_by_name(pattern):
+                for entity in self.store.get_by_name(pattern, namespace=namespace):
                     all_candidates.append((entity, 0.9))
 
-            all_candidates.extend(self.store.search_hybrid(img_query, img_embedding, top_k=50))
+            all_candidates.extend(self.store.search_hybrid(img_query, img_embedding, top_k=50, namespace=namespace))
 
         merged = self._merge_candidates(all_candidates, [])
 
@@ -221,7 +240,62 @@ class FaultLocalizerProd:
         else:
             results = [{"entity": e, "score": s, "reason": ""} for e, s in merged[:top_k]]
 
-        return {"results": results, "image_extracted": image_extracted}
+        return {"results": results, "image_extracted": image_extracted, "namespace_used": namespace, "namespace_source": "auto-detected" if namespace else "none"}
+
+    def _detect_namespace(self, error) -> str | None:
+        """Auto-detect namespace from stack trace file paths by matching against indexed namespaces."""
+        try:
+            namespaces = self.store.list_namespaces()
+            ns_names = [n["namespace"] for n in namespaces]
+            if not ns_names:
+                return None
+
+            # Check file paths in stack frames
+            for frame in error.frames:
+                path = frame.file_path.lower() if frame.file_path else ""
+                for ns in ns_names:
+                    if ns.lower() in path:
+                        return ns
+
+            # Check package names
+            for frame in error.frames:
+                pkg = (frame.package or "").lower()
+                for ns in ns_names:
+                    if ns.lower() in pkg:
+                        return ns
+
+            # Check error message text
+            raw = error.raw_text.lower() if error.raw_text else ""
+            for ns in ns_names:
+                if ns.lower() in raw:
+                    return ns
+        except Exception:
+            pass
+        return None
+
+    def _detect_namespace_from_image(self, extracted: dict) -> str | None:
+        """Auto-detect namespace from image extraction (app name, section, keywords)."""
+        try:
+            namespaces = self.store.list_namespaces()
+            ns_names = [n["namespace"] for n in namespaces]
+            if not ns_names:
+                return None
+
+            # Check app_section, keywords, raw_text from image extraction
+            search_fields = [
+                extracted.get("app_section", ""),
+                extracted.get("raw_text", ""),
+                " ".join(extracted.get("keywords", [])),
+                " ".join(extracted.get("ui_elements", [])),
+            ]
+            combined = " ".join(search_fields).lower()
+
+            for ns in ns_names:
+                if ns.lower() in combined:
+                    return ns
+        except Exception:
+            pass
+        return None
 
     def _extract_error(self, error_text: str) -> ExtractedError:
         if self.python_extractor.can_parse(error_text):

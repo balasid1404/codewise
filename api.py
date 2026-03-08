@@ -79,11 +79,13 @@ class IndexRequest(BaseModel):
     s3_uri: Optional[str] = None
     workers: int = 4
     incremental: bool = True  # Only index changed files
+    namespace: Optional[str] = None  # Auto-derived from S3 path if not provided
 
 
 class LocalizeRequest(BaseModel):
     error_text: str
     top_k: int = 5
+    namespace: Optional[str] = None  # Auto-detected from stack trace if not provided
 
 
 class ImageLocalizeRequest(BaseModel):
@@ -135,15 +137,24 @@ async def index_codebase(request: IndexRequest):
     job_id = str(uuid.uuid4())[:8]
     source = request.s3_uri or request.codebase_path
 
+    # Derive namespace from S3 path or codebase path if not provided
+    namespace = request.namespace
+    if not namespace and request.s3_uri:
+        # s3://bucket/music-backend/ → music-backend
+        parts = request.s3_uri.replace("s3://", "").split("/")
+        namespace = parts[1] if len(parts) > 1 and parts[1] else None
+    if not namespace and request.codebase_path:
+        namespace = Path(request.codebase_path).name
+
     def do_index(progress_callback=None):
         if request.s3_uri:
             local_path = s3_loader.download(request.s3_uri)
             try:
-                count = localizer.index_codebase(str(local_path), request.workers)
+                count = localizer.index_codebase(str(local_path), request.workers, namespace=namespace)
             finally:
                 s3_loader.cleanup(local_path)
         else:
-            count = localizer.index_codebase(request.codebase_path, request.workers)
+            count = localizer.index_codebase(request.codebase_path, request.workers, namespace=namespace)
 
         # Invalidate cache after reindex
         if cache:
@@ -210,7 +221,7 @@ async def localize_fault(request: LocalizeRequest):
             )
 
     try:
-        results = localizer.localize(request.error_text, request.top_k)
+        results = localizer.localize(request.error_text, request.top_k, namespace=request.namespace)
 
         locations = []
         for r in results:
@@ -274,6 +285,7 @@ async def localize_unified(
     error_text: str = Form(""),
     file: Optional[UploadFile] = File(None),
     top_k: int = Form(5),
+    namespace: str = Form(""),
 ):
     """Unified localization: text + optional image. Returns results and image extraction JSON."""
     if not localizer:
@@ -295,6 +307,7 @@ async def localize_unified(
             error_text=error_text,
             image_path=tmp_path or "",
             top_k=top_k,
+            namespace=namespace or None,
         )
 
         locations = []
@@ -316,6 +329,8 @@ async def localize_unified(
         return {
             "results": locations,
             "image_extracted": result["image_extracted"],
+            "namespace_used": result.get("namespace_used"),
+            "namespace_source": result.get("namespace_source", "none"),
             "cached": False,
         }
 
@@ -366,6 +381,28 @@ async def localize_from_image_upload(file: UploadFile = File(...), top_k: int = 
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/namespaces")
+async def list_namespaces():
+    """List all indexed namespaces with entity counts."""
+    if not localizer:
+        raise HTTPException(status_code=503, detail="OpenSearch not available")
+    try:
+        return {"namespaces": localizer.store.list_namespaces()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/namespaces/search")
+async def search_namespaces(q: str = "", limit: int = 10):
+    """Search namespaces by prefix for typeahead autocomplete."""
+    if not localizer:
+        raise HTTPException(status_code=503, detail="OpenSearch not available")
+    try:
+        return {"namespaces": localizer.store.search_namespaces(q, limit)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/webhook/github")
 async def github_webhook(request: Request, background_tasks: BackgroundTasks):
     """Handle GitHub push webhook for auto-reindex."""
@@ -379,7 +416,6 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks):
     event = webhook_handler.parse_github_push(payload)
 
     if webhook_handler.should_reindex(event["changed_files"]):
-        # Trigger background reindex
         s3_uri = os.getenv("CODEBASE_S3_URI")
         if s3_uri:
             background_tasks.add_task(

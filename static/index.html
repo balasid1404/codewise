@@ -65,6 +65,14 @@
         .two-col > .col-main { flex: 1; min-width: 0; }
         .two-col > .col-side { flex: 0 0 340px; min-width: 0; }
         @media (max-width: 800px) { .two-col { flex-direction: column; } .two-col > .col-side { flex: 1; } }
+        .ns-wrapper { position: relative; }
+        .ns-suggestions { position: absolute; top: 100%; left: 0; right: 0; background: #161b22; border: 1px solid #30363d; border-top: none; border-radius: 0 0 8px 8px; max-height: 200px; overflow-y: auto; z-index: 10; display: none; }
+        .ns-suggestions.open { display: block; }
+        .ns-item { padding: 8px 14px; cursor: pointer; font-size: 0.85rem; display: flex; justify-content: space-between; }
+        .ns-item:hover { background: #21262d; }
+        .ns-item .ns-count { color: #484f58; font-size: 0.75rem; }
+        .ns-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.7rem; background: #0c2d6b; color: #58a6ff; margin-left: 8px; }
+        .ns-auto { font-size: 0.75rem; color: #8b949e; margin-top: 4px; }
     </style>
 </head>
 <body>
@@ -99,6 +107,14 @@
             <button class="btn-danger" id="clearImgBtn" style="display:none;margin-top:6px;" onclick="clearImage()">✕ Remove image</button>
         </div>
         <div class="form-group" style="display:flex;gap:12px;align-items:end;">
+            <div style="flex:1;">
+                <label>Namespace <span style="color:#484f58;">(auto-detected or type to search)</span></label>
+                <div class="ns-wrapper">
+                    <input type="text" id="nsInput" placeholder="Auto-detect from input, or type to search..." autocomplete="off" oninput="searchNamespaces(this.value)" onfocus="searchNamespaces(this.value)">
+                    <div class="ns-suggestions" id="nsSuggestions"></div>
+                </div>
+                <div class="ns-auto" id="nsAutoLabel"></div>
+            </div>
             <div style="flex:0 0 120px;">
                 <label>Top K</label>
                 <input type="number" id="topK" value="5" min="1" max="20">
@@ -121,6 +137,10 @@
         <div class="form-group">
             <label>S3 URI</label>
             <input type="text" id="s3Uri" placeholder="s3://fault-loc-codebase-650251724071/my-project/">
+        </div>
+        <div class="form-group">
+            <label>Namespace <span style="color:#484f58;">(auto-derived from S3 folder name if empty)</span></label>
+            <input type="text" id="indexNamespace" placeholder="Leave empty to auto-derive from S3 path">
         </div>
         <div class="form-group" style="display:flex;gap:12px;align-items:end;">
             <div style="flex:0 0 120px;">
@@ -229,6 +249,33 @@ dz.addEventListener('drop', (e) => {
     }
 });
 
+// --- Namespace typeahead ---
+let nsDebounce = null;
+async function searchNamespaces(q) {
+    clearTimeout(nsDebounce);
+    nsDebounce = setTimeout(async () => {
+        const box = document.getElementById('nsSuggestions');
+        if (!q || q.length < 1) { box.classList.remove('open'); return; }
+        try {
+            const r = await fetch(`${API}/namespaces/search?q=${encodeURIComponent(q)}&limit=10`);
+            const d = await r.json();
+            if (!d.namespaces || d.namespaces.length === 0) { box.classList.remove('open'); return; }
+            box.innerHTML = d.namespaces.map(n =>
+                `<div class="ns-item" onclick="selectNamespace('${n.namespace}')">${escapeHtml(n.namespace)}<span class="ns-count">${n.count} entities</span></div>`
+            ).join('');
+            box.classList.add('open');
+        } catch(e) { box.classList.remove('open'); }
+    }, 200);
+}
+function selectNamespace(ns) {
+    document.getElementById('nsInput').value = ns;
+    document.getElementById('nsSuggestions').classList.remove('open');
+    document.getElementById('nsAutoLabel').textContent = '';
+}
+document.addEventListener('click', (e) => {
+    if (!e.target.closest('.ns-wrapper')) document.getElementById('nsSuggestions').classList.remove('open');
+});
+
 // --- Unified Localize ---
 async function doLocalize() {
     const btn = document.getElementById('localizeBtn');
@@ -237,11 +284,14 @@ async function doLocalize() {
     const jsonOut = document.getElementById('imageJsonOutput');
     const text = document.getElementById('errorText').value.trim();
     const topK = parseInt(document.getElementById('topK').value);
+    const ns = document.getElementById('nsInput').value.trim();
+    const nsLabel = document.getElementById('nsAutoLabel');
 
     if (!text && !selectedFile) { alert('Enter text, attach an image, or both'); return; }
 
     btn.disabled = true;
     jsonCol.style.display = 'none';
+    nsLabel.textContent = '';
 
     // If image is attached, use unified endpoint
     if (selectedFile) {
@@ -251,10 +301,15 @@ async function doLocalize() {
             fd.append('error_text', text);
             fd.append('file', selectedFile);
             fd.append('top_k', topK);
+            if (ns) fd.append('namespace', ns);
             const r = await fetch(`${API}/localize/unified`, { method: 'POST', body: fd });
             const d = await r.json();
             if (d.detail) { out.innerHTML = `<div class="result-card" style="border-color:#f85149;">${escapeHtml(d.detail)}</div>`; return; }
             out.innerHTML = renderResults(d.results, d.cached);
+            if (d.namespace_used) {
+                nsLabel.innerHTML = `🎯 Namespace: <strong>${escapeHtml(d.namespace_used)}</strong> <span class="ns-badge">${d.namespace_source || 'auto'}</span>`;
+                if (!ns) document.getElementById('nsInput').value = d.namespace_used;
+            }
             if (d.image_extracted) {
                 jsonCol.style.display = 'block';
                 jsonOut.textContent = JSON.stringify(d.image_extracted, null, 2);
@@ -266,9 +321,11 @@ async function doLocalize() {
         // Text only — use original endpoint
         out.innerHTML = '<div class="loading"><span class="spinner"></span>Analyzing with AI...</div>';
         try {
+            const body = { error_text: text, top_k: topK };
+            if (ns) body.namespace = ns;
             const r = await fetch(`${API}/localize`, {
                 method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ error_text: text, top_k: topK })
+                body: JSON.stringify(body)
             });
             const d = await r.json();
             if (d.detail) { out.innerHTML = `<div class="result-card" style="border-color:#f85149;">${escapeHtml(d.detail)}</div>`; return; }
@@ -283,12 +340,15 @@ async function doLocalize() {
 async function startIndex() {
     const out = document.getElementById('indexResults');
     const uri = document.getElementById('s3Uri').value.trim();
+    const ns = document.getElementById('indexNamespace').value.trim();
     if (!uri) return;
     out.innerHTML = '<div class="loading"><span class="spinner"></span>Starting indexing job...</div>';
     try {
+        const body = { s3_uri: uri, workers: parseInt(document.getElementById('workers').value) };
+        if (ns) body.namespace = ns;
         const r = await fetch(`${API}/index`, {
             method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ s3_uri: uri, workers: parseInt(document.getElementById('workers').value) })
+            body: JSON.stringify(body)
         });
         const d = await r.json();
         if (d.detail) { out.innerHTML = `<div class="result-card" style="border-color:#f85149;">${escapeHtml(d.detail)}</div>`; return; }

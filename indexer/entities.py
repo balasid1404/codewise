@@ -25,6 +25,7 @@ class CodeEntity:
     embedding: Optional[list[float]] = None
     calls: list[str] = field(default_factory=list)  # methods this entity calls
     called_by: list[str] = field(default_factory=list)  # methods that call this
+    namespace: Optional[str] = None  # org/team/repo scope for search isolation
 
     @property
     def full_name(self) -> str:
