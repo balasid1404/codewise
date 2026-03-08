@@ -1,5 +1,8 @@
 """Production fault localizer with OpenSearch backend."""
 
+import queue
+import threading
+import logging
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from sentence_transformers import SentenceTransformer
@@ -10,6 +13,11 @@ from indexer import CodeIndexer, CodeEntity
 from storage import OpenSearchStore
 from graph import CallGraph
 from ranker import LLMRanker
+
+logger = logging.getLogger(__name__)
+
+# Sentinel to signal pipeline stage completion
+_DONE = object()
 
 
 class FaultLocalizerProd:
@@ -25,70 +33,143 @@ class FaultLocalizerProd:
         self.python_extractor = PythonStackExtractor()
         self.java_extractor = JavaStackExtractor()
         self.image_extractor = ImageExtractor()
-        self.ui_mapper = ScalableUIMapper(self.store.client)  # Uses OpenSearch
+        self.ui_mapper = ScalableUIMapper(self.store.client)
         self.ranker = LLMRanker() if use_llm else None
         self.use_llm = use_llm
 
     def index_codebase(self, path: str, workers: int = 4, namespace: str = None) -> int:
-        """Index codebase with parallel workers. Namespace auto-derived from path if not provided."""
+        """
+        3-stage parallel pipeline:
+          Stage 1 (Parse):  N threads parse files → entities (CPU-bound per file, parallelizable)
+          Stage 2 (Embed):  Batch-encode entities with CodeBERT (GPU/CPU, sequential batches)
+          Stage 3 (Index):  Bulk upsert to OpenSearch (I/O-bound)
+
+        Stages are connected by queues and run concurrently so parsing, embedding,
+        and indexing overlap in time.
+        """
         codebase = Path(path)
         if not namespace:
-            namespace = codebase.name  # Use folder name as namespace
-        indexer = CodeIndexer(model_name="microsoft/codebert-base")
-
-        py_files = list(codebase.rglob("*.py"))
-        java_files = list(codebase.rglob("*.java"))
-        js_files = list(codebase.rglob("*.js"))
-        ts_files = list(codebase.rglob("*.ts"))
-        html_files = list(codebase.rglob("*.html"))
-        all_files = py_files + java_files + js_files + ts_files + html_files
+            namespace = codebase.name
 
         skip_dirs = {"venv", "node_modules", ".git", "__pycache__", "build", "dist", "cdk.out"}
-        all_files = [f for f in all_files if not any(d in f.parts for d in skip_dirs)]
+        all_files = [
+            f for f in codebase.rglob("*")
+            if f.suffix in (".py", ".java", ".js", ".ts", ".html")
+            and not any(d in f.parts for d in skip_dirs)
+        ]
 
-        total_indexed = 0
-        batch_size = max(1, len(all_files) // workers)
+        if not all_files:
+            return 0
 
-        def process_batch(files):
-            entities = []
-            for f in files:
+        indexer = CodeIndexer(model_name="microsoft/codebert-base")
+
+        # Queues between stages (bounded to limit memory)
+        parse_q = queue.Queue(maxsize=64)   # Stage 1 → Stage 2: batches of entities
+        index_q = queue.Queue(maxsize=32)   # Stage 2 → Stage 3: batches with embeddings
+
+        total_indexed = [0]  # mutable counter for threads
+        errors = []
+
+        # ── Stage 1: Parse (multi-threaded) ──────────────────────────
+        def stage_parse():
+            parse_batch_size = 50  # entities per batch sent to stage 2
+            buffer = []
+
+            def parse_file(f):
                 try:
                     if f.suffix == ".py":
-                        entities.extend(indexer.python_parser.parse_file(f))
+                        return indexer.python_parser.parse_file(f)
                     elif f.suffix == ".java":
-                        entities.extend(indexer.java_parser.parse_file(f))
+                        return indexer.java_parser.parse_file(f)
                     elif f.suffix in (".js", ".ts"):
-                        entities.extend(indexer.js_ts_parser.parse_file(f))
+                        return indexer.js_ts_parser.parse_file(f)
                     elif f.suffix == ".html":
-                        entities.extend(indexer.html_parser.parse_file(f))
-                except Exception:
-                    continue
+                        return indexer.html_parser.parse_file(f)
+                except Exception as e:
+                    logger.debug(f"Parse error {f}: {e}")
+                return []
 
-            if entities:
-                texts = [e.to_search_text() for e in entities]
-                embeddings = self.encoder.encode(texts, show_progress_bar=False)
-                for entity, emb in zip(entities, embeddings):
-                    entity.embedding = emb.tolist()
-                    entity.namespace = namespace
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = {pool.submit(parse_file, f): f for f in all_files}
+                for future in as_completed(futures):
+                    try:
+                        entities = future.result()
+                        for ent in entities:
+                            ent.namespace = namespace
+                            buffer.append(ent)
+                            if len(buffer) >= parse_batch_size:
+                                parse_q.put(buffer)
+                                buffer = []
+                    except Exception as e:
+                        logger.debug(f"Parse future error: {e}")
 
-            return entities
+            if buffer:
+                parse_q.put(buffer)
+            parse_q.put(_DONE)
 
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = []
-            for i in range(0, len(all_files), batch_size):
-                batch = all_files[i:i + batch_size]
-                futures.append(executor.submit(process_batch, batch))
+        # ── Stage 2: Embed (batched, sequential for GPU efficiency) ──
+        def stage_embed():
+            embed_batch_size = 256  # encode this many at once for throughput
+            pending = []
 
-            for future in as_completed(futures):
-                entities = future.result()
-                if entities:
-                    self.store.index(entities)
-                    # Learn vocabulary in OpenSearch
-                    for entity in entities:
-                        self.ui_mapper.learn_from_entity(entity)
-                    total_indexed += len(entities)
+            while True:
+                batch = parse_q.get()
+                if batch is _DONE:
+                    break
+                pending.extend(batch)
 
-        return total_indexed
+                # Encode when we have enough, or drain remaining
+                while len(pending) >= embed_batch_size:
+                    chunk = pending[:embed_batch_size]
+                    pending = pending[embed_batch_size:]
+                    texts = [e.to_search_text() for e in chunk]
+                    embeddings = self.encoder.encode(texts, show_progress_bar=False, batch_size=embed_batch_size)
+                    for ent, emb in zip(chunk, embeddings):
+                        ent.embedding = emb.tolist()
+                    index_q.put(chunk)
+
+            # Flush remaining
+            if pending:
+                texts = [e.to_search_text() for e in pending]
+                embeddings = self.encoder.encode(texts, show_progress_bar=False, batch_size=len(pending))
+                for ent, emb in zip(pending, embeddings):
+                    ent.embedding = emb.tolist()
+                index_q.put(pending)
+
+            index_q.put(_DONE)
+
+        # ── Stage 3: Index to OpenSearch (bulk upsert, I/O-bound) ────
+        def stage_index():
+            while True:
+                batch = index_q.get()
+                if batch is _DONE:
+                    break
+                try:
+                    self.store.index(batch)
+                    for ent in batch:
+                        self.ui_mapper.learn_from_entity(ent)
+                    total_indexed[0] += len(batch)
+                except Exception as e:
+                    errors.append(str(e))
+                    logger.error(f"Index error: {e}")
+
+        # ── Launch all 3 stages concurrently ─────────────────────────
+        t_parse = threading.Thread(target=stage_parse, name="parse")
+        t_embed = threading.Thread(target=stage_embed, name="embed")
+        t_index = threading.Thread(target=stage_index, name="index")
+
+        t_parse.start()
+        t_embed.start()
+        t_index.start()
+
+        t_parse.join()
+        t_embed.join()
+        t_index.join()
+
+        if errors:
+            logger.warning(f"Indexing completed with {len(errors)} errors")
+
+        return total_indexed[0]
 
     def localize(self, error_text: str, top_k: int = 5, namespace: str = None) -> list[dict]:
         """Localize fault from stack trace. Namespace auto-detected from file paths if not provided."""
