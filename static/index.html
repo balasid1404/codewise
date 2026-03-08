@@ -216,6 +216,10 @@ async function checkHealth() {
 checkHealth();
 setInterval(checkHealth, 30000);
 
+// Clear namespace inputs on load (prevent stale values after redeploy)
+document.getElementById('nsInput').value = '';
+document.getElementById('indexNamespace').value = '';
+
 function escapeHtml(s) {
     if (!s) return '';
     return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -285,7 +289,11 @@ async function searchNamespaces(q) {
         try {
             const r = await fetch(`${API}/namespaces/search?q=${encodeURIComponent(q)}&limit=10`);
             const d = await r.json();
-            if (!d.namespaces || d.namespaces.length === 0) { box.classList.remove('open'); return; }
+            if (!d.namespaces || d.namespaces.length === 0) {
+                box.innerHTML = '<div class="ns-item" style="color:#f85149;cursor:default;">No matching namespaces indexed</div>';
+                box.classList.add('open');
+                return;
+            }
             box.innerHTML = d.namespaces.map(n =>
                 `<div class="ns-item" onclick="selectNamespace('${n.namespace}')">${escapeHtml(n.namespace)}<span class="ns-count">${n.count} entities</span></div>`
             ).join('');
@@ -498,7 +506,7 @@ async function loadJobs() {
         out.innerHTML = d.jobs.map(j => `
             <div class="job-card">
                 <div>
-                    <strong style="color:#58a6ff;">${j.job_id}</strong>
+                    <strong style="color:#58a6ff;">${j.job_id}</strong>${j.namespace ? `<span class="ns-badge">${escapeHtml(j.namespace)}</span>` : ''}
                     <div style="color:#8b949e;font-size:0.8rem;margin-top:4px;">${escapeHtml(j.source || 'unknown')} — ${j.entities_indexed ?? 0} entities</div>
                 </div>
                 <span class="job-status ${j.status}">${j.status}</span>

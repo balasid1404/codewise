@@ -25,6 +25,7 @@ class IndexJob:
     entities_indexed: int = 0
     error: Optional[str] = None
     progress: float = 0.0  # 0-100
+    namespace: Optional[str] = None
 
 
 class BackgroundIndexer:
@@ -34,9 +35,9 @@ class BackgroundIndexer:
         self.jobs: dict[str, IndexJob] = {}
         self._lock = threading.Lock()
 
-    def start_job(self, job_id: str, source: str, index_func, *args) -> IndexJob:
+    def start_job(self, job_id: str, source: str, index_func, *args, namespace: str = None) -> IndexJob:
         """Start a background indexing job."""
-        job = IndexJob(job_id=job_id, source=source)
+        job = IndexJob(job_id=job_id, source=source, namespace=namespace)
 
         with self._lock:
             self.jobs[job_id] = job

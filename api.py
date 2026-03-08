@@ -124,6 +124,7 @@ class JobStatusResponse(BaseModel):
     progress: float
     entities_indexed: int
     error: Optional[str] = None
+    namespace: Optional[str] = None
 
 
 # Endpoints
@@ -164,7 +165,7 @@ async def index_codebase(request: IndexRequest):
 
         return count
 
-    background_indexer.start_job(job_id, source, do_index)
+    background_indexer.start_job(job_id, source, do_index, namespace=namespace)
 
     return IndexJobResponse(
         job_id=job_id,
@@ -221,7 +222,7 @@ async def index_from_upload(
             shutil.rmtree(extract_dir, ignore_errors=True)
             os.unlink(zip_path)
 
-    background_indexer.start_job(job_id, source, do_index)
+    background_indexer.start_job(job_id, source, do_index, namespace=ns)
 
     return IndexJobResponse(
         job_id=job_id,
@@ -242,7 +243,8 @@ async def get_index_status(job_id: str):
         status=job.status.value,
         progress=job.progress,
         entities_indexed=job.entities_indexed,
-        error=job.error
+        error=job.error,
+        namespace=job.namespace,
     )
 
 
@@ -257,7 +259,8 @@ async def list_index_jobs():
                 "source": j.source,
                 "status": j.status.value,
                 "progress": j.progress,
-                "entities_indexed": j.entities_indexed
+                "entities_indexed": j.entities_indexed,
+                "namespace": j.namespace,
             }
             for j in jobs
         ]
