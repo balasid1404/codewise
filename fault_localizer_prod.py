@@ -146,8 +146,10 @@ class FaultLocalizerProd:
         report("resolving", entities_parsed=len(all_entities))
         logger.info(f"Resolving relationships for {len(all_entities)} entities...")
         resolver.resolve(all_entities)
+        logger.info("Resolving complete.")
 
         # ── Stages 3-4: Embed + Index (concurrent via queues) ────────
+        report("embedding", entities_embedded=0, entities_total=len(all_entities))
         embed_q = queue.Queue(maxsize=32)
         total_indexed = [0]
         entities_embedded = [0]

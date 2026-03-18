@@ -58,8 +58,8 @@ class FaultLocalizationStack(Stack):
         # --- Elasticsearch Fargate Service (replaces managed OpenSearch) ---
         es_task_def = ecs.FargateTaskDefinition(
             self, "EsTaskDef",
-            cpu=512,
-            memory_limit_mib=1024,
+            cpu=1024,
+            memory_limit_mib=2048,
         )
 
         es_container = es_task_def.add_container(
@@ -68,7 +68,7 @@ class FaultLocalizationStack(Stack):
             environment={
                 "discovery.type": "single-node",
                 "DISABLE_SECURITY_PLUGIN": "true",
-                "OPENSEARCH_JAVA_OPTS": "-Xms384m -Xmx384m",
+                "OPENSEARCH_JAVA_OPTS": "-Xms1g -Xmx1g",
             },
             logging=ecs.LogDrivers.aws_logs(
                 stream_prefix="elasticsearch",
