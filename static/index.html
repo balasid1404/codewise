@@ -551,6 +551,11 @@ function pollJob(id, out) {
         try {
             const r = await fetch(`${API}/index/${id}`);
             const d = await r.json();
+            if (!r.ok || d.detail) {
+                // Don't overwrite the UI with undefined fields — log the error and keep polling
+                console.warn(`Poll error for job ${id}:`, d.detail || r.status);
+                return;
+            }
             let stageInfo = '';
             if (d.stage === 'parsing') {
                 stageInfo = `<br>📂 Parsing: ${d.files_parsed}/${d.files_total} files → ${d.entities_parsed} entities`;
@@ -576,7 +581,7 @@ function pollJob(id, out) {
                 ${cancelBtn}
             </div>`;
             if (d.status === 'completed' || d.status === 'failed' || d.status === 'cancelled') { clearInterval(poll); checkHealth(); }
-        } catch(e) { clearInterval(poll); }
+        } catch(e) { console.warn('Poll fetch error:', e); }
     }, 2000);
 }
 

@@ -238,6 +238,25 @@ async def index_from_upload(
     )
 
 
+@app.get("/index/jobs/list")
+async def list_index_jobs():
+    """List all indexing jobs."""
+    jobs = background_indexer.list_jobs()
+    return {
+        "jobs": [
+            {
+                "job_id": j.job_id,
+                "source": j.source,
+                "status": j.status.value,
+                "progress": j.progress,
+                "entities_indexed": j.entities_indexed,
+                "namespace": j.namespace,
+            }
+            for j in jobs
+        ]
+    }
+
+
 @app.get("/index/{job_id}", response_model=JobStatusResponse)
 async def get_index_status(job_id: str):
     """Get indexing job status."""
@@ -275,25 +294,6 @@ async def cancel_index_job(job_id: str):
         raise HTTPException(status_code=400, detail="Could not cancel job")
 
     return {"job_id": job_id, "message": "Cancellation requested. Job will stop after current batch."}
-
-
-@app.get("/index/jobs/list")
-async def list_index_jobs():
-    """List all indexing jobs."""
-    jobs = background_indexer.list_jobs()
-    return {
-        "jobs": [
-            {
-                "job_id": j.job_id,
-                "source": j.source,
-                "status": j.status.value,
-                "progress": j.progress,
-                "entities_indexed": j.entities_indexed,
-                "namespace": j.namespace,
-            }
-            for j in jobs
-        ]
-    }
 
 
 @app.post("/localize", response_model=LocalizeResponse)
