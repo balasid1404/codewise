@@ -10,6 +10,10 @@ from sentence_transformers import SentenceTransformer
 from extractors import PythonStackExtractor, JavaStackExtractor, ExtractedError, StackFrame, ImageExtractor
 from extractors.scalable_ui_mapper import ScalableUIMapper
 from indexer import CodeIndexer, CodeEntity
+from indexer.python_parser import PythonParser
+from indexer.java_parser import JavaParser
+from indexer.js_ts_parser import JsTsParser
+from indexer.html_parser import HtmlParser
 from indexer.relationship_resolver import RelationshipResolver
 from storage import OpenSearchStore
 from graph import CallGraph
@@ -88,7 +92,11 @@ class FaultLocalizerProd:
         if not all_files:
             return 0
 
-        indexer = CodeIndexer(model_name="microsoft/codebert-base")
+        indexer = CodeIndexer.__new__(CodeIndexer)
+        indexer.python_parser = PythonParser()
+        indexer.java_parser = JavaParser()
+        indexer.js_ts_parser = JsTsParser()
+        indexer.html_parser = HtmlParser()
         resolver = RelationshipResolver()
 
         # ── Stage 1: Parse (multi-threaded) ──────────────────────────
@@ -481,18 +489,24 @@ class FaultLocalizerProd:
     def _embed_entities_chunked(self, entities: list) -> None:
         """Embed entities using chunk-level embeddings.
 
-        For entities with body > 512 chars, split into overlapping chunks,
-        embed each chunk, and average the embeddings. This captures more
-        detail from large methods than a single truncated embedding.
+        Skips trivial entities (< 30 chars body). For entities > 512 chars,
+        splits into overlapping chunks, embeds each, and averages.
         """
         import numpy as np
 
-        # Separate small (single embedding) and large (chunked) entities
         single_entities = []
-        chunked_entities = []  # (entity, list_of_chunk_texts)
+        chunked_entities = []
+        trivial_count = 0
 
         for ent in entities:
-            chunks = ent.to_embedding_chunks(chunk_size=512, overlap=128)
+            # Skip trivial entities — getters, setters, tiny stubs
+            body_len = len(ent.body) if ent.body else 0
+            if body_len < 30:
+                ent.embedding = [0.0] * 768
+                trivial_count += 1
+                continue
+
+            chunks = ent.to_embedding_chunks(chunk_size=512, overlap=64)
             if len(chunks) <= 1:
                 single_entities.append((ent, chunks[0] if chunks else ent.to_embedding_text()))
             else:
@@ -508,7 +522,7 @@ class FaultLocalizerProd:
         # Encode chunked entities: all chunks in one batch, then average per entity
         if chunked_entities:
             all_chunks = []
-            chunk_map = []  # (entity_index, chunk_count)
+            chunk_map = []
             for i, (ent, chunks) in enumerate(chunked_entities):
                 all_chunks.extend(chunks)
                 chunk_map.append((i, len(chunks)))
@@ -519,7 +533,6 @@ class FaultLocalizerProd:
             for ent_idx, count in chunk_map:
                 ent = chunked_entities[ent_idx][0]
                 chunk_embs = all_embeddings[offset:offset + count]
-                # Mean pooling across chunks
                 mean_emb = np.mean(chunk_embs, axis=0)
                 ent.embedding = mean_emb.tolist()
                 offset += count
