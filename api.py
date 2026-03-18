@@ -5,6 +5,7 @@ import uuid
 import tempfile
 import zipfile
 import shutil
+import logging
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks, UploadFile, File, Form
 from fastapi.staticfiles import StaticFiles
@@ -19,6 +20,9 @@ from indexer.background_indexer import BackgroundIndexer, IndexStatus
 from cache import QueryCache
 from webhooks import GitWebhookHandler
 from utils import wait_for_opensearch
+
+# Configure logging so all loggers (including indexer, resolver) output at INFO level
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
 
 # Global instances
