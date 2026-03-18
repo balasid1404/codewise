@@ -6,8 +6,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Pre-download the ML model at build time (avoids slow runtime download)
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('microsoft/codebert-base')"
+# Pre-download ML models at build time (avoids slow runtime download)
+RUN python -c "from sentence_transformers import SentenceTransformer, CrossEncoder; SentenceTransformer('microsoft/codebert-base'); CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')"
 
 # Copy source
 COPY . .

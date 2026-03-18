@@ -2,6 +2,7 @@
 sentence-transformers>=2.2.0
 rank-bm25>=0.2.2
 numpy>=1.24.0
+networkx>=3.0
 
 # Code parsing
 javalang>=0.13.0

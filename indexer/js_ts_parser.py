@@ -25,9 +25,33 @@ class JsTsParser:
         parser = self._ts_parser if file_path.suffix == ".ts" else self._js_parser
         tree = parser.parse(source)
 
+        # Extract file-level imports
+        file_imports = self._extract_imports(tree.root_node, source)
+
         entities = []
         self._walk(tree.root_node, file_path, source, entities, class_name=None)
+
+        # Attach imports to all entities from this file
+        for ent in entities:
+            ent.imports = file_imports
+
         return entities
+
+    def _extract_imports(self, root_node, source):
+        """Extract import paths from import statements."""
+        imports = []
+        for child in root_node.children:
+            if child.type == "import_statement":
+                src_node = child.child_by_field_name("source")
+                if src_node:
+                    path = src_node.text.decode("utf-8").strip("'\"")
+                    imports.append(path)
+            elif child.type == "export_statement":
+                src_node = child.child_by_field_name("source")
+                if src_node:
+                    path = src_node.text.decode("utf-8").strip("'\"")
+                    imports.append(path)
+        return imports
 
     def _walk(self, node, file_path, source, entities, class_name):
         """Recursively walk the AST and extract entities."""

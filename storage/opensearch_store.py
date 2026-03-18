@@ -54,6 +54,8 @@ class OpenSearchStore(VectorStore):
                                 "method": {"name": "hnsw", "space_type": "cosinesimil", "engine": "nmslib"}
                             },
                             "calls": {"type": "keyword"},
+                            "imports": {"type": "keyword"},
+                            "annotations": {"type": "keyword"},
                         }
                     }
                 }
@@ -82,6 +84,8 @@ class OpenSearchStore(VectorStore):
                     "search_text": entity.to_search_text(),
                     "embedding": entity.embedding,
                     "calls": entity.calls,
+                    "imports": entity.imports,
+                    "annotations": entity.annotations,
                 }
             }
             actions.append(doc)
@@ -222,6 +226,89 @@ class OpenSearchStore(VectorStore):
         ]
         return matches[:limit]
 
+    def get_dependencies(self, entity_id: str, namespace: str = None) -> dict:
+        """Get dependency tree for an entity: what it calls, what calls it, its imports, and siblings in same file."""
+        # Get the entity itself
+        try:
+            doc = self.client.get(index=self.INDEX_NAME, id=entity_id)
+        except Exception:
+            return {"error": "Entity not found"}
+
+        src = doc["_source"]
+        entity_name = src.get("full_name") or src.get("name")
+        entity_calls = src.get("calls", [])
+        entity_imports = src.get("imports", [])
+        entity_file = src.get("file_path")
+        ns = namespace or src.get("namespace")
+
+        # 1. What this entity calls (callees) — resolve call names to actual entities
+        callees = []
+        if entity_calls:
+            for call_name in entity_calls[:20]:
+                results = self.get_by_name(call_name, namespace=ns)
+                for e in results[:2]:  # limit per call name
+                    callees.append(self._entity_to_summary(e))
+
+        # 2. What calls this entity (callers) — search for entities whose calls field contains this name
+        callers = []
+        name = src.get("name")
+        if name:
+            filter_clauses = [{"term": {"calls": name}}]
+            if ns:
+                filter_clauses.append({"term": {"namespace": ns}})
+            try:
+                resp = self.client.search(
+                    index=self.INDEX_NAME,
+                    body={"size": 20, "query": {"bool": {"filter": filter_clauses}}}
+                )
+                for hit in resp["hits"]["hits"]:
+                    callers.append(self._hit_to_summary(hit))
+            except Exception:
+                pass
+
+        # 3. Siblings — other entities in the same file
+        siblings = []
+        if entity_file:
+            file_entities = self.get_by_file(entity_file)
+            for e in file_entities:
+                if e.id != entity_id:
+                    siblings.append(self._entity_to_summary(e))
+
+        return {
+            "entity": {
+                "id": src["id"],
+                "name": entity_name,
+                "file_path": entity_file,
+                "signature": src.get("signature"),
+                "annotations": src.get("annotations", []),
+            },
+            "imports": entity_imports,
+            "calls": callees,
+            "called_by": callers,
+            "same_file": siblings[:10],
+        }
+
+    def _entity_to_summary(self, entity: CodeEntity) -> dict:
+        return {
+            "id": entity.id,
+            "name": entity.full_name,
+            "file_path": entity.file_path,
+            "start_line": entity.start_line,
+            "signature": entity.signature,
+            "entity_type": entity.entity_type.value,
+        }
+
+    def _hit_to_summary(self, hit: dict) -> dict:
+        src = hit["_source"]
+        return {
+            "id": src["id"],
+            "name": src.get("full_name") or src.get("name"),
+            "file_path": src.get("file_path"),
+            "start_line": src.get("start_line"),
+            "signature": src.get("signature"),
+            "entity_type": src.get("entity_type"),
+        }
+
     def _hits_to_entities(self, hits: list) -> list[tuple[CodeEntity, float]]:
         results = []
         for hit in hits:
@@ -241,6 +328,8 @@ class OpenSearchStore(VectorStore):
                 embedding=src.get("embedding"),
                 calls=src.get("calls", []),
                 namespace=src.get("namespace"),
+                imports=src.get("imports", []),
+                annotations=src.get("annotations", []),
             )
             results.append((entity, hit["_score"]))
         return results

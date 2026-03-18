@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>CodeWise — Project Summary</title>
+<style>
+  @page { size: A4; margin: 2cm 2.5cm; }
+  body {
+    font-family: -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif;
+    font-size: 11pt; line-height: 1.65; color: #1a1a1a;
+    max-width: 900px; margin: 0 auto; padding: 40px 20px;
+  }
+  h1 { font-size: 24pt; color: #0d1117; border-bottom: 3px solid #0969da; padding-bottom: 8px; margin-top: 0; }
+  h2 { font-size: 16pt; color: #0d1117; border-bottom: 1px solid #d0d7de; padding-bottom: 6px; margin-top: 36px; }
+  h3 { font-size: 13pt; color: #24292f; margin-top: 24px; }
+  table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 10pt; }
+  th { background: #f0f3f6; border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; font-weight: 600; }
+  td { border: 1px solid #d0d7de; padding: 6px 12px; }
+  tr:nth-child(even) td { background: #f8f9fa; }
+  code { background: #f0f3f6; padding: 2px 6px; border-radius: 4px; font-family: 'SF Mono', 'Fira Code', Consolas, monospace; font-size: 9.5pt; }
+  pre { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; padding: 14px 18px; overflow-x: auto; font-size: 9pt; line-height: 1.5; }
+  pre code { background: none; padding: 0; }
+  hr { border: none; border-top: 1px solid #d0d7de; margin: 28px 0; }
+  ul, ol { padding-left: 24px; }
+  li { margin: 4px 0; }
+  strong { color: #0d1117; }
+  .mermaid { margin: 20px 0; text-align: center; }
+  .mermaid svg { max-width: 100%; }
+  @media print {
+    body { font-size: 10pt; padding: 0; }
+    h1 { font-size: 20pt; }
+    h2 { font-size: 14pt; page-break-after: avoid; }
+    h3 { page-break-after: avoid; }
+    table { page-break-inside: avoid; font-size: 9pt; }
+    pre { page-break-inside: avoid; font-size: 8pt; }
+    .mermaid { page-break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+
+<h1>CodeWise — Project Summary</h1>
+
+<h2>The Problem</h2>
+<p>At enterprise-scale companies like AWS, 10,000+ engineers work across 100+ service teams (EC2, S3, Lambda, RDS, ECS, CloudFormation, IAM, etc.), each owning thousands of repos totaling 30M+ code entities. When something breaks or a feature needs building, the hardest part isn't writing the fix — it's <strong>finding the right code</strong>.</p>
+<ul>
+  <li>A Lambda engineer gets a production alert with a stack trace referencing <code>com.aws.iam.policy.PolicyEvaluationEngine</code>. They don't own IAM. Which repo? Which team? 30 minutes gone just navigating.</li>
+  <li>A new hire on the ECS team needs to add a capacity provider feature. 3,000+ repos in the ECS org. An hour of grepping and reading READMEs before they find the right service.</li>
+  <li>QA screenshots a broken console page on the CloudFormation stack creation wizard. The dev who picks up the ticket spends 2 hours tracing which React component renders the form, which API feeds it resource types, and which config controls validation — before changing a single line.</li>
+</ul>
+
+<p><strong>Impact at scale:</strong></p>
+<table>
+  <tr><th>Metric</th><th>Value</th></tr>
+  <tr><td>Avg time wasted per bug ticket on code discovery</td><td>30–60 min</td></tr>
+  <tr><td>Bug tickets filed daily</td><td>5,000+</td></tr>
+  <tr><td>Engineer-hours lost daily to code discovery</td><td>~2,500</td></tr>
+  <tr><td>Annual cost ($50/hr loaded)</td><td><strong>~$45M/year</strong></td></tr>
+</table>
+<p>The problem compounds across service boundaries — a Lambda bug might originate in a shared IAM policy evaluation library owned by the IAM team. Without cross-org code intelligence, engineers are blind.</p>
+
+<hr>
+
+<h2>The Solution</h2>
+<p>CodeWise is an AI-powered code intelligence system. Developers paste a stack trace, ask a natural language question, or upload a screenshot — and get back the exact code locations they need, ranked by relevance, with explanations.</p>
+
+<h3>What It Does</h3>
+<pre><code>Input:   "which code renders the payment verification banner?"
+         + screenshot of the Amazon Music subscription page
+         + namespace: music
+
+Output:  #1  VerificationBanner.tsx  (src/components/subscription/VerificationBanner.tsx:12)  — 95%
+             "This React component renders the payment verification banner shown in the screenshot"
+
+         #2  SubscriptionPage.tsx    (src/pages/SubscriptionPage.tsx:45)                      — 85%
+             "Parent page component that mounts the VerificationBanner"
+
+         #3  getVerificationStatus() (src/api/payment.ts:78)                                 — 75%
+             "Backend API call that fetches the verification state displayed in the banner"</code></pre>
+
+<h3>Three Input Modes</h3>
+<ol>
+  <li><strong>Stack traces</strong> — paste a Python/Java traceback, get the root cause code (not just the crash site)</li>
+  <li><strong>Natural language</strong> — ask "where should I add rate limiting?" or "which service handles payment retries?"</li>
+  <li><strong>Screenshots</strong> — upload a screenshot of a bug or UI, the Vision LLM identifies the app, extracts UI elements, and maps them to code</li>
+</ol>
+<p>All three can be combined. Text + image together produce stronger results.</p>
+
+<h3>Namespace Isolation</h3>
+<p>Every indexed code entity belongs to a namespace (org, team, or repo). Queries are scoped — a Music engineer's search only hits Music code. Namespace is auto-detected from stack trace file paths, image branding, or selected via searchable typeahead.</p>
+
+<hr>
+
+<h2>How It Works</h2>
+
+<div class="mermaid">
+flowchart TD
+    A["Input Layer\nStack Trace · NL Query · Screenshot · Text + Image"]
+    B["1. Query Classification\nStack trace → extract frames, exception, methods\nNL query → raw text as semantic search query\nImage → Vision LLM extracts UI elements, error text"]
+    C["2. Namespace Resolution\nAuto-detect from file paths / package names\nAuto-detect from app branding · Typeahead fallback"]
+    D["3. Hybrid Search (scoped by namespace)\nBM25 text search · CodeBERT vector search\nCall graph expansion · Merge + deduplicate"]
+    E["4. Dual-Mode LLM Re-ranking (Amazon Nova Pro)\nStack traces → fault localization prompt\nNL queries → relevance prompt\nTop-5 results with confidence + explanations"]
+    A --> B --> C --> D --> E
+</div>
+
+<hr>
+
+<h2>Benchmarks (Live Prototype)</h2>
+<p>Measured against the live deployment on AWS Fargate, March 8, 2026.</p>
+
+<h3>Environment</h3>
+<table>
+  <tr><th>Resource</th><th>Spec</th></tr>
+  <tr><td>App container</td><td>1 vCPU, 6 GB RAM (Fargate)</td></tr>
+  <tr><td>OpenSearch</td><td>Self-hosted 2.11 (0.5 vCPU, 1 GB)</td></tr>
+  <tr><td>Embeddings</td><td>CodeBERT (microsoft/codebert-base, 768-dim)</td></tr>
+  <tr><td>LLM</td><td>Amazon Nova Pro v1:0 (Bedrock)</td></tr>
+  <tr><td>Region</td><td>us-east-1</td></tr>
+  <tr><td>Indexed codebase</td><td>471 entities (fault-localization project)</td></tr>
+</table>
+
+<h3>Query Latency</h3>
+<table>
+  <tr><th>Query</th><th>Type</th><th>Latency</th><th>Top-1 Result</th><th>Confidence</th></tr>
+  <tr><td>"which code handles image extraction?"</td><td>NL</td><td>2.32s</td><td><code>ImageExtractor</code> (image_extractor.py)</td><td>90%</td></tr>
+  <tr><td>"where is the indexing pipeline?"</td><td>NL</td><td>2.13s</td><td><code>main</code> (example.py)</td><td>95%</td></tr>
+  <tr><td>"find the OpenSearch storage layer"</td><td>NL</td><td>1.90s</td><td><code>OpenSearchStore</code> (opensearch_store.py)</td><td>95%</td></tr>
+  <tr><td>"where should I add rate limiting?"</td><td>NL</td><td>2.75s</td><td><code>search</code> (fault_localizer.py)</td><td>90%</td></tr>
+  <tr><td>"which code does LLM ranking?"</td><td>NL</td><td>3.23s</td><td><code>LLMRanker</code> (llm_ranker.py)</td><td>95%</td></tr>
+  <tr><td>Python traceback (AttributeError)</td><td>Stack trace</td><td>2.72s</td><td><code>localize</code> (fault_localizer_prod.py)</td><td>85%</td></tr>
+</table>
+
+<h3>Summary Metrics</h3>
+<table>
+  <tr><th>Metric</th><th>Prototype (measured)</th><th>Production (projected)</th></tr>
+  <tr><td>Avg query latency</td><td>2.5s</td><td>&lt; 2s</td></tr>
+  <tr><td>Top-1 accuracy</td><td>83%</td><td>85%+ (with feedback loop)</td></tr>
+  <tr><td>Top-5 relevance</td><td>64%</td><td>80%+ (with query expansion)</td></tr>
+  <tr><td>Indexing throughput</td><td>6 entities/sec (CPU)</td><td>1,000 entities/sec (GPU)</td></tr>
+  <tr><td>Index time (471 entities)</td><td>78s</td><td>&lt; 5s</td></tr>
+  <tr><td>Index time (30M entities)</td><td>—</td><td>~5 hrs (16 CPU) / ~2 hrs (GPU)</td></tr>
+  <tr><td>LLM cost per query</td><td>$0.003</td><td>$0.003</td></tr>
+</table>
+
+<h3>Latency Breakdown</h3>
+<table>
+  <tr><th>Stage</th><th>Time</th></tr>
+  <tr><td>Network round-trip (client → ALB)</td><td>~600ms</td></tr>
+  <tr><td>CodeBERT embedding</td><td>~200ms</td></tr>
+  <tr><td>OpenSearch hybrid search</td><td>~150ms</td></tr>
+  <tr><td>LLM re-ranking (Nova Pro)</td><td>~1.5s</td></tr>
+  <tr><td><strong>Total</strong></td><td><strong>~2.5s</strong></td></tr>
+</table>
+
+<h3>Metadata Endpoints</h3>
+<table>
+  <tr><th>Endpoint</th><th>Latency (incl. network)</th></tr>
+  <tr><td>Health check</td><td>0.68s</td></tr>
+  <tr><td>Stats</td><td>0.60s</td></tr>
+  <tr><td>Namespace list</td><td>0.62s</td></tr>
+  <tr><td>Namespace search</td><td>0.61s</td></tr>
+</table>
+
+<hr>
+
+<h2>Architecture</h2>
+
+<h3>Prototype (Deployed)</h3>
+<div class="mermaid">
+flowchart TD
+    User --> ALB["ALB (internet-facing)"]
+    ALB --> App["Fargate App Container\n1 vCPU, 6 GB RAM\nFastAPI + CodeBERT + Extractors + Ranker"]
+    App --> OS["OpenSearch (Fargate)\n0.5 vCPU, 1 GB"]
+    App --> S3["S3 (codebase storage)"]
+    App --> LLM["Bedrock Nova Pro\n(LLM ranking + image)"]
+</div>
+
+<h3>Production (Designed for 30M+ entities)</h3>
+<div class="mermaid">
+flowchart TD
+    subgraph AWS_Cloud["AWS Cloud"]
+        subgraph VPC
+            ALB["ALB (HTTPS)"] --> QS["Query Service\nFargate x4-8"]
+            QS --> OS["OpenSearch Cluster\n3x r6g.2xlarge"]
+            QS --> LLM["Bedrock\nNova Pro"]
+            IW["Index Workers\nFargate, on-demand"] --> OS
+            SQS["SQS Index Queue"] --> IW
+        end
+        ECR["ECR"]
+        S3["S3"]
+        GIT["Git Webhooks / CodePipeline"] --> SQS
+    end
+</div>
+
+<h3>Production Resource Estimates (30M entities)</h3>
+<table>
+  <tr><th>Resource</th><th>Specification</th><th>Monthly Cost</th></tr>
+  <tr><td>OpenSearch</td><td>3x r6g.2xlarge (64 GB RAM each)</td><td>~$1,500</td></tr>
+  <tr><td>Query Service</td><td>4x Fargate tasks (1 vCPU, 4 GB)</td><td>~$300</td></tr>
+  <tr><td>Indexing Workers</td><td>On-demand Fargate (burst)</td><td>~$100</td></tr>
+  <tr><td>Bedrock Nova Pro</td><td>~5K queries/day</td><td>~$500</td></tr>
+  <tr><td>SQS + S3 + CloudWatch</td><td>Misc</td><td>~$50</td></tr>
+  <tr><td><strong>Total</strong></td><td></td><td><strong>~$2,500/mo</strong></td></tr>
+</table>
+
+<hr>
+
+<h2>Technology Stack</h2>
+<table>
+  <tr><th>Component</th><th>Technology</th></tr>
+  <tr><td>Language</td><td>Python 3.11</td></tr>
+  <tr><td>API</td><td>FastAPI + Uvicorn</td></tr>
+  <tr><td>Search</td><td>OpenSearch 2.11 (BM25 + HNSW vector)</td></tr>
+  <tr><td>Embeddings</td><td>CodeBERT (microsoft/codebert-base, 768-dim)</td></tr>
+  <tr><td>LLM</td><td>Amazon Nova Pro via Bedrock Converse API</td></tr>
+  <tr><td>Parsing</td><td>Python AST, javalang, tree-sitter (JS/TS/HTML)</td></tr>
+  <tr><td>Containers</td><td>AWS Fargate</td></tr>
+  <tr><td>Infrastructure</td><td>AWS CDK (Python)</td></tr>
+  <tr><td>CI/CD</td><td>GitHub Actions → ECR → ECS</td></tr>
+  <tr><td>Storage</td><td>Amazon S3</td></tr>
+</table>
+
+<hr>
+
+<h2>Indexing Pipeline</h2>
+<p>3-stage parallel pipeline — all stages run concurrently via bounded queues:</p>
+
+<div class="mermaid">
+flowchart LR
+    P["Stage 1: PARSE\nN threads parse\nfiles in parallel"]
+    E["Stage 2: EMBED\nBatched CodeBERT\nencoding (256/batch)"]
+    I["Stage 3: INDEX\nBulk upsert to\nOpenSearch (500/batch)"]
+    P -- "queue (50/batch)" --> E -- "queue (256/batch)" --> I
+</div>
+
+<table>
+  <tr><th>Metric</th><th>Prototype</th><th>Production (projected)</th></tr>
+  <tr><td>Parse workers</td><td>4 threads</td><td>16–32 Fargate tasks</td></tr>
+  <tr><td>Embed batch size</td><td>256</td><td>256 (GPU accelerated)</td></tr>
+  <tr><td>Index batch size</td><td>500</td><td>500</td></tr>
+  <tr><td>S3 download threads</td><td>16</td><td>16 per worker</td></tr>
+  <tr><td>Throughput</td><td>6 entities/sec</td><td>1,000 entities/sec</td></tr>
+</table>
+
+<h3>Indexing Time Projections</h3>
+<table>
+  <tr><th>Scale</th><th>CPU (4 workers)</th><th>CPU (16 workers)</th><th>GPU (4 workers)</th></tr>
+  <tr><td>500 entities</td><td>~30s</td><td>~10s</td><td>~5s</td></tr>
+  <tr><td>30K entities</td><td>~30 min</td><td>~8 min</td><td>~2 min</td></tr>
+  <tr><td>1M entities</td><td>~16 hr</td><td>~4 hr</td><td>~30 min</td></tr>
+  <tr><td>30M entities</td><td>~21 hr</td><td>~5 hr</td><td>~2 hr</td></tr>
+</table>
+<p>After initial index, incremental updates (per git push) take seconds.</p>
+
+<hr>
+
+<h2>Current State</h2>
+<table>
+  <tr><th>Feature</th><th>Status</th></tr>
+  <tr><td>Stack trace localization</td><td>✅ Working</td></tr>
+  <tr><td>Natural language queries</td><td>✅ Working (dual-mode LLM prompts)</td></tr>
+  <tr><td>Screenshot localization</td><td>✅ Working (Vision LLM)</td></tr>
+  <tr><td>Unified text + image</td><td>✅ Working</td></tr>
+  <tr><td>Namespace isolation</td><td>✅ Auto-detect + typeahead</td></tr>
+  <tr><td>Multi-language parsing</td><td>✅ Python, Java, JS, TS, HTML</td></tr>
+  <tr><td>3-stage parallel indexing</td><td>✅ Deployed</td></tr>
+  <tr><td>Zip upload for demos</td><td>✅ No S3 needed</td></tr>
+  <tr><td>Namespace delete</td><td>✅ Wipe indexed data per namespace</td></tr>
+  <tr><td>CI/CD auto-deploy</td><td>✅ GitHub Actions</td></tr>
+  <tr><td>Web UI</td><td>✅ Dark-themed single-page app</td></tr>
+  <tr><td>Redis cache</td><td>❌ Not deployed (optional)</td></tr>
+  <tr><td>IDE plugin</td><td>❌ Future</td></tr>
+  <tr><td>Feedback loop</td><td>❌ Future</td></tr>
+</table>
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: 'default', flowchart: { useMaxWidth: true, htmlLabels: true } });</script>
+</body>
+</html>

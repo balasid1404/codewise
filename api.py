@@ -49,7 +49,8 @@ async def lifespan(app: FastAPI):
         localizer = FaultLocalizerProd(
             opensearch_host=opensearch_host,
             opensearch_port=int(os.getenv("OPENSEARCH_PORT", "9200")),
-            use_llm=os.getenv("USE_LLM", "false").lower() == "true"
+            use_llm=os.getenv("USE_LLM", "false").lower() == "true",
+            use_cross_encoder=os.getenv("USE_CROSS_ENCODER", "true").lower() == "true",
         )
     except Exception as e:
         print(f"Warning: Could not connect to OpenSearch: {e}")
@@ -96,6 +97,7 @@ class ImageLocalizeRequest(BaseModel):
 
 
 class FaultLocation(BaseModel):
+    entity_id: str = ""
     name: str
     full_name: str
     file_path: str
@@ -290,6 +292,7 @@ async def localize_fault(request: LocalizeRequest):
             entity = r["entity"]
             confidence = r.get("confidence", r.get("score", 0))
             locations.append(FaultLocation(
+                entity_id=entity.id,
                 name=entity.name,
                 full_name=entity.full_name,
                 file_path=entity.file_path,
@@ -325,6 +328,7 @@ async def localize_from_image(request: ImageLocalizeRequest):
             entity = r["entity"]
             confidence = r.get("confidence", r.get("score", 0))
             locations.append(FaultLocation(
+                entity_id=entity.id,
                 name=entity.name,
                 full_name=entity.full_name,
                 file_path=entity.file_path,
@@ -426,6 +430,7 @@ async def localize_from_image_upload(file: UploadFile = File(...), top_k: int = 
             entity = r["entity"]
             confidence = r.get("confidence", r.get("score", 0))
             locations.append(FaultLocation(
+                entity_id=entity.id,
                 name=entity.name,
                 full_name=entity.full_name,
                 file_path=entity.file_path,
@@ -477,6 +482,22 @@ async def delete_namespace(namespace: str):
         )
         deleted = result.get("deleted", 0)
         return {"namespace": namespace, "deleted": deleted, "message": f"Deleted {deleted} entities from namespace '{namespace}'"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/dependencies/{entity_id}")
+async def get_dependencies(entity_id: str, namespace: str = None):
+    """Get dependency tree for an entity: calls, callers, imports, same-file siblings."""
+    if not localizer:
+        raise HTTPException(status_code=503, detail="OpenSearch not available")
+    try:
+        result = localizer.store.get_dependencies(entity_id, namespace=namespace)
+        if "error" in result:
+            raise HTTPException(status_code=404, detail=result["error"])
+        return result
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

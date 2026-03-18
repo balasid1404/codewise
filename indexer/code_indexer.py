@@ -44,13 +44,19 @@ class CodeIndexer:
                 continue
             entities.extend(self.html_parser.parse_file(html_file))
 
-        # Generate embeddings
-        texts = [e.to_search_text() for e in entities]
-        if texts:
-            embeddings = self.encoder.encode(texts, show_progress_bar=True)
-            for entity, emb in zip(entities, embeddings):
+        # Generate embeddings (chunk-level for large entities)
+        import numpy as np
+
+        for entity in entities:
+            chunks = entity.to_embedding_chunks(chunk_size=512, overlap=128)
+            if len(chunks) == 1:
+                emb = self.encoder.encode(chunks[0], show_progress_bar=False)
                 entity.embedding = emb.tolist()
-                self.entities[entity.id] = entity
+            else:
+                chunk_embs = self.encoder.encode(chunks, show_progress_bar=False)
+                mean_emb = np.mean(chunk_embs, axis=0)
+                entity.embedding = mean_emb.tolist()
+            self.entities[entity.id] = entity
 
         return entities
 

@@ -36,16 +36,16 @@
         .btn-danger { background: transparent; color: #f85149; border: none; cursor: pointer; font-size: 0.8rem; padding: 4px 8px; }
         .btn-danger:hover { text-decoration: underline; }
         .results { margin-top: 24px; }
-        .result-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; margin-bottom: 12px; }
-        .result-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-        .result-name { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.9rem; color: #58a6ff; }
-        .result-file { font-size: 0.8rem; color: #8b949e; margin-bottom: 8px; }
-        .confidence { padding: 3px 10px; border-radius: 12px; font-size: 0.75rem; font-weight: 600; }
+        .result-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; margin-bottom: 12px; overflow: hidden; word-wrap: break-word; overflow-wrap: break-word; }
+        .result-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; gap: 8px; min-width: 0; }
+        .result-name { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.9rem; color: #58a6ff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
+        .result-file { font-size: 0.8rem; color: #8b949e; margin-bottom: 8px; word-break: break-all; }
+        .confidence { padding: 3px 10px; border-radius: 12px; font-size: 0.75rem; font-weight: 600; flex-shrink: 0; }
         .confidence.high { background: #0d4429; color: #3fb950; }
         .confidence.medium { background: #3d2e00; color: #d29922; }
         .confidence.low, .confidence.very_low { background: #3d1e20; color: #f85149; }
-        .result-reason { font-size: 0.85rem; color: #c9d1d9; line-height: 1.5; }
-        .result-sig { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.8rem; color: #7ee787; background: #0d1117; padding: 8px 12px; border-radius: 6px; margin: 8px 0; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
+        .result-reason { font-size: 0.85rem; color: #c9d1d9; line-height: 1.5; word-wrap: break-word; overflow-wrap: break-word; }
+        .result-sig { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.8rem; color: #7ee787; background: #0d1117; padding: 8px 12px; border-radius: 6px; margin: 8px 0; overflow-x: auto; white-space: pre-wrap; word-break: break-all; max-width: 100%; }
         .job-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 14px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
         .job-status { padding: 3px 10px; border-radius: 12px; font-size: 0.75rem; font-weight: 600; display: inline-block; }
         .job-status.completed { background: #0d4429; color: #3fb950; }
@@ -73,6 +73,15 @@
         .ns-item .ns-count { color: #484f58; font-size: 0.75rem; }
         .ns-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.7rem; background: #0c2d6b; color: #58a6ff; margin-left: 8px; }
         .ns-auto { font-size: 0.75rem; color: #8b949e; margin-top: 4px; }
+        .dep-btn { background: none; border: 1px solid #30363d; color: #8b949e; padding: 3px 10px; border-radius: 6px; font-size: 0.75rem; cursor: pointer; margin-top: 8px; }
+        .dep-btn:hover { border-color: #58a6ff; color: #58a6ff; }
+        .dep-tree { margin-top: 10px; padding: 10px 14px; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; font-size: 0.8rem; display: none; }
+        .dep-tree.open { display: block; }
+        .dep-section { margin-bottom: 8px; }
+        .dep-section-title { color: #58a6ff; font-size: 0.75rem; font-weight: 600; margin-bottom: 4px; }
+        .dep-item { color: #c9d1d9; padding: 2px 0; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.75rem; }
+        .dep-item .dep-file { color: #484f58; margin-left: 6px; }
+        .dep-none { color: #484f58; font-style: italic; }
     </style>
 </head>
 <body>
@@ -235,8 +244,67 @@ function renderResults(results, cached) {
             <div class="result-file">📄 ${r.file_path.replace(/^\/tmp\/[^/]+\//, '')} : ${r.start_line}–${r.end_line}</div>
             <div class="result-sig">${escapeHtml(r.signature)}</div>
             <div class="result-reason">${escapeHtml(r.reason)}</div>
+            ${r.entity_id ? `<button class="dep-btn" onclick="toggleDeps('${r.entity_id}', this)">🔗 Dependencies</button><div class="dep-tree" id="dep-${r.entity_id}"></div>` : ''}
         </div>
     `).join('') + (cached ? '<div style="color:#8b949e;font-size:0.8rem;margin-top:8px;">⚡ Cached result</div>' : '');
+}
+
+async function toggleDeps(entityId, btn) {
+    const tree = document.getElementById('dep-' + entityId);
+    if (tree.classList.contains('open')) {
+        tree.classList.remove('open');
+        btn.textContent = '🔗 Dependencies';
+        return;
+    }
+    btn.textContent = '⏳ Loading...';
+    try {
+        const r = await fetch(`${API}/dependencies/${entityId}`);
+        const d = await r.json();
+        if (d.detail) { tree.innerHTML = `<span style="color:#f85149;">${escapeHtml(d.detail)}</span>`; tree.classList.add('open'); btn.textContent = '🔗 Dependencies'; return; }
+
+        let html = '';
+
+        // Imports
+        if (d.imports && d.imports.length > 0) {
+            html += `<div class="dep-section"><div class="dep-section-title">📦 Imports (${d.imports.length})</div>`;
+            d.imports.slice(0, 15).forEach(imp => { html += `<div class="dep-item">${escapeHtml(imp)}</div>`; });
+            if (d.imports.length > 15) html += `<div class="dep-none">...and ${d.imports.length - 15} more</div>`;
+            html += '</div>';
+        }
+
+        // Calls (what this entity calls)
+        if (d.calls && d.calls.length > 0) {
+            html += `<div class="dep-section"><div class="dep-section-title">➡️ Calls (${d.calls.length})</div>`;
+            d.calls.forEach(c => { html += `<div class="dep-item">${escapeHtml(c.name)}<span class="dep-file">${escapeHtml(c.file_path)}:${c.start_line}</span></div>`; });
+            html += '</div>';
+        } else {
+            html += '<div class="dep-section"><div class="dep-section-title">➡️ Calls</div><div class="dep-none">None detected</div></div>';
+        }
+
+        // Called by (what calls this entity)
+        if (d.called_by && d.called_by.length > 0) {
+            html += `<div class="dep-section"><div class="dep-section-title">⬅️ Called By (${d.called_by.length})</div>`;
+            d.called_by.forEach(c => { html += `<div class="dep-item">${escapeHtml(c.name)}<span class="dep-file">${escapeHtml(c.file_path)}:${c.start_line}</span></div>`; });
+            html += '</div>';
+        } else {
+            html += '<div class="dep-section"><div class="dep-section-title">⬅️ Called By</div><div class="dep-none">None detected</div></div>';
+        }
+
+        // Same file siblings
+        if (d.same_file && d.same_file.length > 0) {
+            html += `<div class="dep-section"><div class="dep-section-title">📄 Same File (${d.same_file.length})</div>`;
+            d.same_file.forEach(c => { html += `<div class="dep-item">${escapeHtml(c.name)} <span style="color:#484f58;">(${c.entity_type})</span></div>`; });
+            html += '</div>';
+        }
+
+        tree.innerHTML = html || '<div class="dep-none">No dependency data available</div>';
+        tree.classList.add('open');
+        btn.textContent = '🔗 Dependencies ▾';
+    } catch(e) {
+        tree.innerHTML = `<span style="color:#f85149;">Error: ${escapeHtml(e.message)}</span>`;
+        tree.classList.add('open');
+        btn.textContent = '🔗 Dependencies';
+    }
 }
 
 // --- Image handling ---

@@ -16,11 +16,18 @@ class JavaParser:
         lines = content.splitlines()
         package = tree.package.name if tree.package else None
 
+        # Extract file-level imports
+        file_imports = [imp.path for imp in tree.imports] if tree.imports else []
+
         for _, class_node in tree.filter(javalang.tree.ClassDeclaration):
-            entities.append(self._extract_class(class_node, file_path, lines, package))
+            ent = self._extract_class(class_node, file_path, lines, package)
+            ent.imports = file_imports
+            entities.append(ent)
 
             for method in class_node.methods:
-                entities.append(self._extract_method(method, file_path, lines, class_node.name, package))
+                ent = self._extract_method(method, file_path, lines, class_node.name, package)
+                ent.imports = file_imports
+                entities.append(ent)
 
         return entities
 
@@ -28,6 +35,13 @@ class JavaParser:
         start_line = node.position.line if node.position else 1
         end_line = self._find_end_line(lines, start_line)
         body = "\n".join(lines[start_line - 1:end_line])
+        annotations = [f"@{a.name}" for a in node.annotations] if node.annotations else []
+        extends = f" extends {node.extends.name}" if node.extends else ""
+        implements = ""
+        if node.implements:
+            impl_names = [i.name for i in node.implements]
+            implements = f" implements {', '.join(impl_names)}"
+        sig = f"class {node.name}{extends}{implements}"
 
         entity_id = hashlib.md5(f"{file_path}:{node.name}:{start_line}".encode()).hexdigest()
 
@@ -38,10 +52,11 @@ class JavaParser:
             file_path=str(file_path),
             start_line=start_line,
             end_line=end_line,
-            signature=f"class {node.name}",
+            signature=sig,
             body=body,
             package=package,
-            docstring=node.documentation
+            docstring=node.documentation,
+            annotations=annotations
         )
 
     def _extract_method(self, node, file_path: Path, lines: list[str], class_name: str, package: str | None) -> CodeEntity:
@@ -50,6 +65,7 @@ class JavaParser:
         body = "\n".join(lines[start_line - 1:end_line])
         signature = self._get_signature(node)
         calls = self._extract_calls(node)
+        annotations = [f"@{a.name}" for a in node.annotations] if node.annotations else []
 
         entity_id = hashlib.md5(f"{file_path}:{class_name}.{node.name}:{start_line}".encode()).hexdigest()
 
@@ -65,7 +81,8 @@ class JavaParser:
             class_name=class_name,
             package=package,
             docstring=node.documentation,
-            calls=calls
+            calls=calls,
+            annotations=annotations
         )
 
     def _get_signature(self, node) -> str:

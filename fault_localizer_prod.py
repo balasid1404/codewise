@@ -7,14 +7,26 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from sentence_transformers import SentenceTransformer
 
-from extractors import PythonStackExtractor, JavaStackExtractor, ExtractedError, ImageExtractor
+from extractors import PythonStackExtractor, JavaStackExtractor, ExtractedError, StackFrame, ImageExtractor
 from extractors.scalable_ui_mapper import ScalableUIMapper
 from indexer import CodeIndexer, CodeEntity
 from storage import OpenSearchStore
 from graph import CallGraph
 from ranker import LLMRanker
+from ranker.graph_ranker import GraphRanker
+from ranker.cross_encoder_ranker import CrossEncoderRanker
 
 logger = logging.getLogger(__name__)
+
+# Library path patterns — frames matching these are deprioritized
+_LIB_PATTERNS = (
+    "site-packages", "dist-packages", "node_modules", "jre/lib", "jdk/",
+    "rt.jar", "java.base/", "java.lang.", "java.util.", "sun.",
+    "org.springframework.aop", "org.springframework.cglib",
+    "org.apache.catalina", "org.apache.coyote", "org.apache.tomcat",
+    "werkzeug/", "flask/app", "django/core/handlers", "uvicorn/",
+    "starlette/", "fastapi/routing", "gunicorn/",
+)
 
 # Sentinel to signal pipeline stage completion
 _DONE = object()
@@ -26,7 +38,8 @@ class FaultLocalizerProd:
         opensearch_host: str = "localhost",
         opensearch_port: int = 9200,
         use_llm: bool = True,
-        encoder_model: str = "microsoft/codebert-base"
+        encoder_model: str = "microsoft/codebert-base",
+        use_cross_encoder: bool = True,
     ):
         self.store = OpenSearchStore(host=opensearch_host, port=opensearch_port)
         self.encoder = SentenceTransformer(encoder_model)
@@ -35,6 +48,8 @@ class FaultLocalizerProd:
         self.image_extractor = ImageExtractor()
         self.ui_mapper = ScalableUIMapper(self.store.client)
         self.ranker = LLMRanker() if use_llm else None
+        self.graph_ranker = GraphRanker(self.store)
+        self.cross_encoder = CrossEncoderRanker() if use_cross_encoder else None
         self.use_llm = use_llm
 
     def index_codebase(self, path: str, workers: int = 4, namespace: str = None) -> int:
@@ -108,6 +123,10 @@ class FaultLocalizerProd:
             parse_q.put(_DONE)
 
         # ── Stage 2: Embed (batched, sequential for GPU efficiency) ──
+        # Uses chunk-level embeddings: large methods are split into overlapping
+        # chunks, each embedded separately. The entity's final embedding is the
+        # mean of its chunk embeddings, capturing more detail than a single
+        # truncated embedding.
         def stage_embed():
             embed_batch_size = 256  # encode this many at once for throughput
             pending = []
@@ -122,18 +141,12 @@ class FaultLocalizerProd:
                 while len(pending) >= embed_batch_size:
                     chunk = pending[:embed_batch_size]
                     pending = pending[embed_batch_size:]
-                    texts = [e.to_search_text() for e in chunk]
-                    embeddings = self.encoder.encode(texts, show_progress_bar=False, batch_size=embed_batch_size)
-                    for ent, emb in zip(chunk, embeddings):
-                        ent.embedding = emb.tolist()
+                    self._embed_entities_chunked(chunk)
                     index_q.put(chunk)
 
             # Flush remaining
             if pending:
-                texts = [e.to_search_text() for e in pending]
-                embeddings = self.encoder.encode(texts, show_progress_bar=False, batch_size=len(pending))
-                for ent, emb in zip(pending, embeddings):
-                    ent.embedding = emb.tolist()
+                self._embed_entities_chunked(pending)
                 index_q.put(pending)
 
             index_q.put(_DONE)
@@ -172,7 +185,16 @@ class FaultLocalizerProd:
         return total_indexed[0]
 
     def localize(self, error_text: str, top_k: int = 5, namespace: str = None) -> list[dict]:
-        """Localize fault from stack trace or answer natural language code questions."""
+        """Localize fault from stack trace or answer natural language code questions.
+
+        Pipeline:
+          1. Extract error / detect NL query
+          2. Weighted stack frame scoring (top frame + first app frame boosted)
+          3. Hybrid retrieval (BM25 + vector)
+          4. Graph-based score propagation (callers/callees of suspicious code)
+          5. Cross-encoder reranking (precise query-document scoring)
+          6. LLM reranking (final intelligence pass)
+        """
         error = self._extract_error(error_text)
         is_nl_query = error.exception_type in ("NLQuery", "Unknown") and not error.frames
 
@@ -181,23 +203,27 @@ class FaultLocalizerProd:
             namespace = self._detect_namespace(error)
 
         if is_nl_query:
-            # Natural language query — use raw text directly as search query
             query = error_text.strip()
         else:
-            # Stack trace — build structured query from extracted info
-            query = f"{error.exception_type} {error.message} {' '.join(error.method_names)}"
+            # Stack frame weighting: build query with weighted frame contributions
+            query = self._build_weighted_query(error)
 
         query_embedding = self.encoder.encode(query).tolist()
 
+        # Direct candidates from stack frames (with position-based weighting)
         direct_candidates = []
         if not is_nl_query:
-            for frame in error.frames:
-                entities = self.store.get_by_name(frame.method_name, namespace=namespace)
-                for entity in entities:
-                    direct_candidates.append((entity, 1.0))
+            direct_candidates = self._weighted_frame_lookup(error, namespace)
 
         search_results = self.store.search_hybrid(query, query_embedding, top_k=50, namespace=namespace)
         all_candidates = self._merge_candidates(direct_candidates, search_results)
+
+        # Graph-based score propagation
+        all_candidates = self.graph_ranker.propagate(all_candidates, namespace=namespace)
+
+        # Cross-encoder reranking (narrows to top 15 with precise scores)
+        if self.cross_encoder and self.cross_encoder.available:
+            all_candidates = self.cross_encoder.rerank(query, all_candidates, top_k=15)
 
         if self.use_llm and self.ranker:
             return self.ranker.rank_and_explain(error, all_candidates, top_k)
@@ -242,6 +268,13 @@ class FaultLocalizerProd:
 
         # Dedupe and sort
         all_candidates = self._merge_candidates(candidates, [])
+
+        # Graph-based score propagation
+        all_candidates = self.graph_ranker.propagate(all_candidates, namespace=namespace)
+
+        # Cross-encoder reranking
+        if self.cross_encoder and self.cross_encoder.available:
+            all_candidates = self.cross_encoder.rerank(query, all_candidates, top_k=15)
 
         # 5. LLM re-rank with image context
         if self.use_llm and self.ranker:
@@ -318,6 +351,14 @@ class FaultLocalizerProd:
 
         merged = self._merge_candidates(all_candidates, [])
 
+        # Graph-based score propagation
+        merged = self.graph_ranker.propagate(merged, namespace=namespace)
+
+        # Cross-encoder reranking
+        combined_query = " ".join([error_text[:300]] + image_query_parts[:5]) if error_text else " ".join(image_query_parts[:5])
+        if self.cross_encoder and self.cross_encoder.available and merged:
+            merged = self.cross_encoder.rerank(combined_query, merged, top_k=15)
+
         # LLM re-rank
         if self.use_llm and self.ranker and merged:
             context_parts = []
@@ -339,6 +380,141 @@ class FaultLocalizerProd:
             results = [{"entity": e, "score": s, "reason": ""} for e, s in merged[:top_k]]
 
         return {"results": results, "image_extracted": image_extracted, "namespace_used": namespace, "namespace_source": "auto-detected" if namespace else "none"}
+
+    # ── Stack frame weighting helpers ────────────────────────────
+
+    def _is_library_frame(self, frame) -> bool:
+        """Check if a stack frame is from a library (not application code)."""
+        path = (frame.file_path or "").replace("\\", "/")
+        pkg = frame.package or ""
+        combined = f"{path} {pkg}".lower()
+        return any(p in combined for p in _LIB_PATTERNS)
+
+    def _build_weighted_query(self, error: ExtractedError) -> str:
+        """Build search query with stack frame weighting.
+
+        Strategy:
+        - Top frame (index 0) gets 3x weight (most immediate symptom)
+        - First application frame gets 3x weight (most likely root cause)
+        - Other app frames get 1x weight
+        - Library frames are excluded from query
+        """
+        parts = [error.exception_type, error.message]
+
+        if not error.frames:
+            return " ".join(parts)
+
+        first_app_frame = None
+        for frame in error.frames:
+            if not self._is_library_frame(frame):
+                first_app_frame = frame
+                break
+
+        for i, frame in enumerate(error.frames):
+            if self._is_library_frame(frame):
+                continue
+
+            method = frame.full_method
+            repeat = 1
+
+            # Top frame gets 3x
+            if i == 0:
+                repeat = 3
+            # First application frame gets 3x (if different from top)
+            elif frame == first_app_frame:
+                repeat = 3
+
+            for _ in range(repeat):
+                parts.append(method)
+
+        return " ".join(parts)
+
+    def _weighted_frame_lookup(
+        self, error: ExtractedError, namespace: str | None
+    ) -> list[tuple[CodeEntity, float]]:
+        """Look up entities for stack frames with position-based scoring.
+
+        Top frame and first app frame get score 1.0.
+        Other app frames decay: 0.8, 0.6, 0.4, ...
+        Library frames get 0.2.
+        """
+        candidates = []
+        if not error.frames:
+            return candidates
+
+        first_app_idx = None
+        for i, frame in enumerate(error.frames):
+            if not self._is_library_frame(frame):
+                first_app_idx = i
+                break
+
+        app_rank = 0
+        for i, frame in enumerate(error.frames):
+            is_lib = self._is_library_frame(frame)
+
+            if i == 0:
+                score = 1.0
+            elif i == first_app_idx:
+                score = 1.0
+            elif is_lib:
+                score = 0.2
+            else:
+                score = max(0.3, 1.0 - app_rank * 0.2)
+                app_rank += 1
+
+            entities = self.store.get_by_name(frame.method_name, namespace=namespace)
+            for entity in entities:
+                candidates.append((entity, score))
+
+        return candidates
+
+    # ── Chunk-level embedding helper ─────────────────────────────
+
+    def _embed_entities_chunked(self, entities: list) -> None:
+        """Embed entities using chunk-level embeddings.
+
+        For entities with body > 512 chars, split into overlapping chunks,
+        embed each chunk, and average the embeddings. This captures more
+        detail from large methods than a single truncated embedding.
+        """
+        import numpy as np
+
+        # Separate small (single embedding) and large (chunked) entities
+        single_entities = []
+        chunked_entities = []  # (entity, list_of_chunk_texts)
+
+        for ent in entities:
+            chunks = ent.to_embedding_chunks(chunk_size=512, overlap=128)
+            if len(chunks) <= 1:
+                single_entities.append((ent, chunks[0] if chunks else ent.to_embedding_text()))
+            else:
+                chunked_entities.append((ent, chunks))
+
+        # Batch encode single-chunk entities
+        if single_entities:
+            texts = [t for _, t in single_entities]
+            embeddings = self.encoder.encode(texts, show_progress_bar=False, batch_size=256)
+            for (ent, _), emb in zip(single_entities, embeddings):
+                ent.embedding = emb.tolist()
+
+        # Encode chunked entities: all chunks in one batch, then average per entity
+        if chunked_entities:
+            all_chunks = []
+            chunk_map = []  # (entity_index, chunk_count)
+            for i, (ent, chunks) in enumerate(chunked_entities):
+                all_chunks.extend(chunks)
+                chunk_map.append((i, len(chunks)))
+
+            all_embeddings = self.encoder.encode(all_chunks, show_progress_bar=False, batch_size=256)
+
+            offset = 0
+            for ent_idx, count in chunk_map:
+                ent = chunked_entities[ent_idx][0]
+                chunk_embs = all_embeddings[offset:offset + count]
+                # Mean pooling across chunks
+                mean_emb = np.mean(chunk_embs, axis=0)
+                ent.embedding = mean_emb.tolist()
+                offset += count
 
     def _detect_namespace(self, error) -> str | None:
         """Auto-detect namespace from stack trace file paths by matching against indexed namespaces."""
