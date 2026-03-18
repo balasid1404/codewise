@@ -563,6 +563,50 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks):
     }
 
 
+@app.post("/index/bulk-import")
+async def bulk_import_entities(request: Request):
+    """Import pre-embedded entities from local indexing. Accepts JSON array of entity dicts."""
+    if not localizer:
+        raise HTTPException(status_code=503, detail="OpenSearch not available")
+
+    data = await request.json()
+    entities_data = data.get("entities", [])
+    namespace = data.get("namespace", "default")
+
+    if not entities_data:
+        raise HTTPException(status_code=400, detail="No entities provided")
+
+    from indexer.entities import CodeEntity, EntityType
+
+    entities = []
+    for ed in entities_data:
+        ent = CodeEntity(
+            id=ed["id"],
+            name=ed["name"],
+            entity_type=EntityType(ed["entity_type"]),
+            file_path=ed["file_path"],
+            start_line=ed["start_line"],
+            end_line=ed["end_line"],
+            signature=ed["signature"],
+            body=ed.get("body", ""),
+            class_name=ed.get("class_name"),
+            package=ed.get("package"),
+            docstring=ed.get("docstring"),
+            embedding=ed.get("embedding"),
+            calls=ed.get("calls", []),
+            imports=ed.get("imports", []),
+            annotations=ed.get("annotations", []),
+            namespace=namespace,
+            resolved_calls=ed.get("resolved_calls", []),
+            base_classes=ed.get("base_classes", []),
+            file_imports=ed.get("file_imports", []),
+        )
+        entities.append(ent)
+
+    count = localizer.store.index(entities)
+    return {"imported": count, "namespace": namespace}
+
+
 @app.get("/health")
 async def health():
     """Health check endpoint."""
