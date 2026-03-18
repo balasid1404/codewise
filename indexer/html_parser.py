@@ -27,6 +27,9 @@ class HtmlParser:
         entities = []
         lines = content.splitlines()
 
+        # Extract external references (script src, link href, etc.)
+        external_refs = self._extract_external_refs(tree.root_node, source)
+
         # Extract the page as a single entity for UI mapping
         title = self._extract_title(tree.root_node, source)
         page_name = file_path.stem
@@ -37,27 +40,40 @@ class HtmlParser:
             signature=f"page {page_name}" + (f" — {title}" if title else ""),
             body=self._extract_text_content(content)[:2000],
             docstring=title,
+            imports=external_refs,  # script src and link href as "imports"
+            file_imports=external_refs,  # same for file-level graph
         ))
 
         # Find <script> elements and parse their JS content
-        self._find_scripts(tree.root_node, source, file_path, entities)
+        self._find_scripts(tree.root_node, source, file_path, entities, external_refs)
 
         return entities
 
-    def _find_scripts(self, node, source, file_path, entities):
+    def _find_scripts(self, node, source, file_path, entities, external_refs=None):
         if node.type == "script_element":
+            # Check for src attribute (external script)
+            start_tag = next((c for c in node.children if c.type == "start_tag"), None)
+            if start_tag:
+                for attr in start_tag.children:
+                    if attr.type == "attribute":
+                        name_node = next((c for c in attr.children if c.type == "attribute_name"), None)
+                        val_node = next((c for c in attr.children if c.type in ("attribute_value", "quoted_attribute_value")), None)
+                        if name_node and val_node and name_node.text.decode("utf-8") == "src":
+                            # External script — already captured in external_refs
+                            pass
+
             raw_text = next((c for c in node.children if c.type == "raw_text"), None)
             if raw_text:
                 js_source = raw_text.text
                 js_tree = self._js_parser.parse(js_source)
                 offset = raw_text.start_point[0]
-                self._extract_js_functions(js_tree.root_node, js_source, file_path, entities, offset)
+                self._extract_js_functions(js_tree.root_node, js_source, file_path, entities, offset, external_refs)
             return
 
         for child in node.children:
-            self._find_scripts(child, source, file_path, entities)
+            self._find_scripts(child, source, file_path, entities, external_refs)
 
-    def _extract_js_functions(self, node, source, file_path, entities, line_offset):
+    def _extract_js_functions(self, node, source, file_path, entities, line_offset, external_refs=None):
         if node.type in ("function_declaration", "generator_function_declaration"):
             name = None
             for child in node.children:
@@ -75,11 +91,12 @@ class HtmlParser:
                     file_path=str(file_path), start_line=start_line, end_line=end_line,
                     signature=f"function {name}({params})", body=body,
                     calls=self._extract_calls(node, source),
+                    imports=external_refs or [],
                 ))
             return
 
         for child in node.children:
-            self._extract_js_functions(child, source, file_path, entities, line_offset)
+            self._extract_js_functions(child, source, file_path, entities, line_offset, external_refs)
 
     def _get_params(self, node, source):
         for child in node.children:
@@ -122,3 +139,43 @@ class HtmlParser:
         text = re.sub(r"<[^>]+>", " ", text)
         text = re.sub(r"\s+", " ", text).strip()
         return text
+
+    def _extract_external_refs(self, node, source) -> list[str]:
+        """Extract script src and link href references from HTML."""
+        refs = []
+        self._walk_for_refs(node, source, refs)
+        return refs
+
+    def _walk_for_refs(self, node, source, refs):
+        if node.type == "element":
+            start_tag = next((c for c in node.children if c.type == "start_tag"), None)
+            if start_tag:
+                tag_name = None
+                attrs = {}
+                for child in start_tag.children:
+                    if child.type == "tag_name":
+                        tag_name = child.text.decode("utf-8").lower()
+                    elif child.type == "attribute":
+                        aname = None
+                        aval = None
+                        for ac in child.children:
+                            if ac.type == "attribute_name":
+                                aname = ac.text.decode("utf-8").lower()
+                            elif ac.type in ("attribute_value", "quoted_attribute_value"):
+                                aval = ac.text.decode("utf-8").strip("'\"")
+                        if aname and aval:
+                            attrs[aname] = aval
+
+                # script src
+                if tag_name == "script" and "src" in attrs:
+                    src = attrs["src"]
+                    if not src.startswith("http") and not src.startswith("//"):
+                        refs.append(src)
+                # link href (stylesheets, but also JS modules)
+                elif tag_name == "link" and "href" in attrs:
+                    href = attrs["href"]
+                    if not href.startswith("http") and not href.startswith("//"):
+                        refs.append(href)
+
+        for child in node.children:
+            self._walk_for_refs(child, source, refs)

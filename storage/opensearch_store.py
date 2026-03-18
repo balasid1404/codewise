@@ -54,8 +54,11 @@ class OpenSearchStore(VectorStore):
                                 "method": {"name": "hnsw", "space_type": "cosinesimil", "engine": "nmslib"}
                             },
                             "calls": {"type": "keyword"},
+                            "resolved_calls": {"type": "keyword"},
                             "imports": {"type": "keyword"},
                             "annotations": {"type": "keyword"},
+                            "base_classes": {"type": "keyword"},
+                            "file_imports": {"type": "keyword"},
                         }
                     }
                 }
@@ -84,8 +87,11 @@ class OpenSearchStore(VectorStore):
                     "search_text": entity.to_search_text(),
                     "embedding": entity.embedding,
                     "calls": entity.calls,
+                    "resolved_calls": entity.resolved_calls,
                     "imports": entity.imports,
                     "annotations": entity.annotations,
+                    "base_classes": entity.base_classes,
+                    "file_imports": entity.file_imports,
                 }
             }
             actions.append(doc)
@@ -241,12 +247,22 @@ class OpenSearchStore(VectorStore):
         entity_file = src.get("file_path")
         ns = namespace or src.get("namespace")
 
-        # 1. What this entity calls (callees) — resolve call names to actual entities
+        # 1. What this entity calls (callees) — use resolved_calls (exact IDs) first, fallback to name
         callees = []
-        if entity_calls:
+        resolved = src.get("resolved_calls", [])
+        if resolved:
+            # Exact: fetch by IDs
+            try:
+                mget_resp = self.client.mget(index=self.INDEX_NAME, body={"ids": resolved[:20]})
+                for doc in mget_resp.get("docs", []):
+                    if doc.get("found"):
+                        callees.append(self._hit_to_summary({"_source": doc["_source"]}))
+            except Exception:
+                pass
+        elif entity_calls:
             for call_name in entity_calls[:20]:
                 results = self.get_by_name(call_name, namespace=ns)
-                for e in results[:2]:  # limit per call name
+                for e in results[:2]:
                     callees.append(self._entity_to_summary(e))
 
         # 2. What calls this entity (callers) — search for entities whose calls field contains this name
@@ -330,6 +346,9 @@ class OpenSearchStore(VectorStore):
                 namespace=src.get("namespace"),
                 imports=src.get("imports", []),
                 annotations=src.get("annotations", []),
+                resolved_calls=src.get("resolved_calls", []),
+                base_classes=src.get("base_classes", []),
+                file_imports=src.get("file_imports", []),
             )
             results.append((entity, hit["_score"]))
         return results

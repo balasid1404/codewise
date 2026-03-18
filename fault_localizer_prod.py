@@ -10,6 +10,7 @@ from sentence_transformers import SentenceTransformer
 from extractors import PythonStackExtractor, JavaStackExtractor, ExtractedError, StackFrame, ImageExtractor
 from extractors.scalable_ui_mapper import ScalableUIMapper
 from indexer import CodeIndexer, CodeEntity
+from indexer.relationship_resolver import RelationshipResolver
 from storage import OpenSearchStore
 from graph import CallGraph
 from ranker import LLMRanker
@@ -54,13 +55,15 @@ class FaultLocalizerProd:
 
     def index_codebase(self, path: str, workers: int = 4, namespace: str = None) -> int:
         """
-        3-stage parallel pipeline:
-          Stage 1 (Parse):  N threads parse files → entities (CPU-bound per file, parallelizable)
-          Stage 2 (Embed):  Batch-encode entities with CodeBERT (GPU/CPU, sequential batches)
-          Stage 3 (Index):  Bulk upsert to OpenSearch (I/O-bound)
+        4-stage pipeline:
+          Stage 1 (Parse):   N threads parse files → entities (CPU-bound, parallelizable)
+          Stage 2 (Resolve): Single pass resolves cross-file calls to entity IDs,
+                             builds inheritance chains, and file-level import graph
+          Stage 3 (Embed):   Batch-encode entities with CodeBERT (chunk-level)
+          Stage 4 (Index):   Bulk upsert to OpenSearch (I/O-bound)
 
-        Stages are connected by queues and run concurrently so parsing, embedding,
-        and indexing overlap in time.
+        Stages 1-2 run sequentially (resolver needs all entities).
+        Stages 3-4 run concurrently via queues.
         """
         codebase = Path(path)
         if not namespace:
@@ -77,84 +80,59 @@ class FaultLocalizerProd:
             return 0
 
         indexer = CodeIndexer(model_name="microsoft/codebert-base")
-
-        # Queues between stages (bounded to limit memory)
-        parse_q = queue.Queue(maxsize=64)   # Stage 1 → Stage 2: batches of entities
-        index_q = queue.Queue(maxsize=32)   # Stage 2 → Stage 3: batches with embeddings
-
-        total_indexed = [0]  # mutable counter for threads
-        errors = []
+        resolver = RelationshipResolver()
 
         # ── Stage 1: Parse (multi-threaded) ──────────────────────────
-        def stage_parse():
-            parse_batch_size = 50  # entities per batch sent to stage 2
-            buffer = []
+        all_entities = []
 
-            def parse_file(f):
+        def parse_file(f):
+            try:
+                if f.suffix == ".py":
+                    return indexer.python_parser.parse_file(f)
+                elif f.suffix == ".java":
+                    return indexer.java_parser.parse_file(f)
+                elif f.suffix in (".js", ".ts"):
+                    return indexer.js_ts_parser.parse_file(f)
+                elif f.suffix == ".html":
+                    return indexer.html_parser.parse_file(f)
+            except Exception as e:
+                logger.debug(f"Parse error {f}: {e}")
+            return []
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(parse_file, f): f for f in all_files}
+            for future in as_completed(futures):
                 try:
-                    if f.suffix == ".py":
-                        return indexer.python_parser.parse_file(f)
-                    elif f.suffix == ".java":
-                        return indexer.java_parser.parse_file(f)
-                    elif f.suffix in (".js", ".ts"):
-                        return indexer.js_ts_parser.parse_file(f)
-                    elif f.suffix == ".html":
-                        return indexer.html_parser.parse_file(f)
+                    entities = future.result()
+                    for ent in entities:
+                        ent.namespace = namespace
+                        all_entities.append(ent)
                 except Exception as e:
-                    logger.debug(f"Parse error {f}: {e}")
-                return []
+                    logger.debug(f"Parse future error: {e}")
 
-            with ThreadPoolExecutor(max_workers=workers) as pool:
-                futures = {pool.submit(parse_file, f): f for f in all_files}
-                for future in as_completed(futures):
-                    try:
-                        entities = future.result()
-                        for ent in entities:
-                            ent.namespace = namespace
-                            buffer.append(ent)
-                            if len(buffer) >= parse_batch_size:
-                                parse_q.put(buffer)
-                                buffer = []
-                    except Exception as e:
-                        logger.debug(f"Parse future error: {e}")
+        if not all_entities:
+            return 0
 
-            if buffer:
-                parse_q.put(buffer)
-            parse_q.put(_DONE)
+        # ── Stage 2: Resolve cross-file relationships ────────────────
+        logger.info(f"Resolving relationships for {len(all_entities)} entities...")
+        resolver.resolve(all_entities)
 
-        # ── Stage 2: Embed (batched, sequential for GPU efficiency) ──
-        # Uses chunk-level embeddings: large methods are split into overlapping
-        # chunks, each embedded separately. The entity's final embedding is the
-        # mean of its chunk embeddings, capturing more detail than a single
-        # truncated embedding.
+        # ── Stages 3-4: Embed + Index (concurrent via queues) ────────
+        embed_q = queue.Queue(maxsize=32)
+        total_indexed = [0]
+        errors = []
+
         def stage_embed():
-            embed_batch_size = 256  # encode this many at once for throughput
-            pending = []
+            embed_batch_size = 256
+            for i in range(0, len(all_entities), embed_batch_size):
+                chunk = all_entities[i:i + embed_batch_size]
+                self._embed_entities_chunked(chunk)
+                embed_q.put(chunk)
+            embed_q.put(_DONE)
 
-            while True:
-                batch = parse_q.get()
-                if batch is _DONE:
-                    break
-                pending.extend(batch)
-
-                # Encode when we have enough, or drain remaining
-                while len(pending) >= embed_batch_size:
-                    chunk = pending[:embed_batch_size]
-                    pending = pending[embed_batch_size:]
-                    self._embed_entities_chunked(chunk)
-                    index_q.put(chunk)
-
-            # Flush remaining
-            if pending:
-                self._embed_entities_chunked(pending)
-                index_q.put(pending)
-
-            index_q.put(_DONE)
-
-        # ── Stage 3: Index to OpenSearch (bulk upsert, I/O-bound) ────
         def stage_index():
             while True:
-                batch = index_q.get()
+                batch = embed_q.get()
                 if batch is _DONE:
                     break
                 try:
@@ -166,16 +144,12 @@ class FaultLocalizerProd:
                     errors.append(str(e))
                     logger.error(f"Index error: {e}")
 
-        # ── Launch all 3 stages concurrently ─────────────────────────
-        t_parse = threading.Thread(target=stage_parse, name="parse")
         t_embed = threading.Thread(target=stage_embed, name="embed")
         t_index = threading.Thread(target=stage_index, name="index")
 
-        t_parse.start()
         t_embed.start()
         t_index.start()
 
-        t_parse.join()
         t_embed.join()
         t_index.join()
 

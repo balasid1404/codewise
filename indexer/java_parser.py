@@ -38,9 +38,13 @@ class JavaParser:
         annotations = [f"@{a.name}" for a in node.annotations] if node.annotations else []
         extends = f" extends {node.extends.name}" if node.extends else ""
         implements = ""
+        base_classes = []
+        if node.extends:
+            base_classes.append(node.extends.name)
         if node.implements:
             impl_names = [i.name for i in node.implements]
             implements = f" implements {', '.join(impl_names)}"
+            base_classes.extend(impl_names)
         sig = f"class {node.name}{extends}{implements}"
 
         entity_id = hashlib.md5(f"{file_path}:{node.name}:{start_line}".encode()).hexdigest()
@@ -56,7 +60,8 @@ class JavaParser:
             body=body,
             package=package,
             docstring=node.documentation,
-            annotations=annotations
+            annotations=annotations,
+            base_classes=base_classes
         )
 
     def _extract_method(self, node, file_path: Path, lines: list[str], class_name: str, package: str | None) -> CodeEntity:

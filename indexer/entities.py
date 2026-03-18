@@ -23,11 +23,14 @@ class CodeEntity:
     package: Optional[str] = None
     docstring: Optional[str] = None
     embedding: Optional[list[float]] = None
-    calls: list[str] = field(default_factory=list)  # methods this entity calls
+    calls: list[str] = field(default_factory=list)  # methods this entity calls (raw names)
     called_by: list[str] = field(default_factory=list)  # methods that call this
     imports: list[str] = field(default_factory=list)  # import statements in this file
     annotations: list[str] = field(default_factory=list)  # decorators/annotations on this entity
     namespace: Optional[str] = None  # org/team/repo scope for search isolation
+    resolved_calls: list[str] = field(default_factory=list)  # resolved entity IDs this calls
+    base_classes: list[str] = field(default_factory=list)  # parent classes (inheritance chain)
+    file_imports: list[str] = field(default_factory=list)  # file paths this file imports from
 
     @property
     def full_name(self) -> str:

@@ -90,7 +90,8 @@ class PythonParser:
             signature=sig,
             body=body,
             docstring=docstring,
-            annotations=decorators
+            annotations=decorators,
+            base_classes=bases
         )
 
     def _get_signature(self, node: ast.FunctionDef) -> str:

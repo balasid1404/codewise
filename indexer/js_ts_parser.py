@@ -60,7 +60,21 @@ class JsTsParser:
         if ntype == "class_declaration":
             name = self._child_text(node, "type_identifier", source) or self._child_text(node, "identifier", source)
             if name:
-                ent = self._make_entity(node, file_path, source, name, EntityType.CLASS, f"class {name}")
+                # Extract extends clause
+                base_classes = []
+                heritage = self._child_by_type(node, "class_heritage")
+                if heritage:
+                    for child in heritage.children:
+                        if child.type in ("identifier", "type_identifier"):
+                            base_classes.append(child.text.decode("utf-8"))
+                        elif child.type == "extends_clause":
+                            for c in child.children:
+                                if c.type in ("identifier", "type_identifier"):
+                                    base_classes.append(c.text.decode("utf-8"))
+
+                extends_str = f" extends {', '.join(base_classes)}" if base_classes else ""
+                ent = self._make_entity(node, file_path, source, name, EntityType.CLASS, f"class {name}{extends_str}")
+                ent.base_classes = base_classes
                 entities.append(ent)
             # Walk class body for methods
             body = self._child_by_type(node, "class_body")

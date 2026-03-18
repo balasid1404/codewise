@@ -8,6 +8,7 @@ from .js_ts_parser import JsTsParser
 from .html_parser import HtmlParser
 from .local_cache import LocalIndexCache
 from .multi_repo_indexer import MultiRepoIndexer
+from .relationship_resolver import RelationshipResolver
 
 __all__ = [
     "CodeEntity",
@@ -19,4 +20,5 @@ __all__ = [
     "HtmlParser",
     "LocalIndexCache",
     "MultiRepoIndexer",
+    "RelationshipResolver",
 ]
