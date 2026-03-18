@@ -6,6 +6,7 @@ and file-level import graphs. Optimized for large codebases (5k+ entities).
 
 import os
 import re
+import time
 import logging
 from collections import defaultdict
 
@@ -18,21 +19,41 @@ class RelationshipResolver:
 
     def resolve(self, entities: list[CodeEntity]) -> list[CodeEntity]:
         """Main entry point. Mutates entities in-place."""
+        t_total = time.monotonic()
+
+        t0 = time.monotonic()
         by_name = self._build_name_index(entities)
+        logger.info(f"[TIMING] _build_name_index: {time.monotonic()-t0:.3f}s ({len(by_name)} names)")
+
+        t0 = time.monotonic()
         by_file = self._build_file_index(entities)
+        logger.info(f"[TIMING] _build_file_index: {time.monotonic()-t0:.3f}s ({len(by_file)} files)")
 
-        # Per-file same-name cache
+        t0 = time.monotonic()
         file_name_cache = {fp: {e.name: e for e in ents} for fp, ents in by_file.items()}
+        logger.info(f"[TIMING] file_name_cache: {time.monotonic()-t0:.3f}s")
 
-        # Module stem → {entity_name: entity} for import resolution
+        t0 = time.monotonic()
         module_entities = self._build_module_entity_index(entities, by_file)
+        logger.info(f"[TIMING] _build_module_entity_index: {time.monotonic()-t0:.3f}s ({len(module_entities)} module keys)")
 
-        # Per-file import scope: call_name → entity
+        t0 = time.monotonic()
         file_import_scope = self._build_file_import_scopes(entities, by_file, by_name, module_entities)
+        logger.info(f"[TIMING] _build_file_import_scopes: {time.monotonic()-t0:.3f}s ({len(file_import_scope)} files)")
 
+        t0 = time.monotonic()
         self._resolve_calls(entities, by_name, file_name_cache, file_import_scope)
+        logger.info(f"[TIMING] _resolve_calls: {time.monotonic()-t0:.3f}s")
+
+        t0 = time.monotonic()
         self._resolve_inheritance(entities)
+        logger.info(f"[TIMING] _resolve_inheritance: {time.monotonic()-t0:.3f}s")
+
+        t0 = time.monotonic()
         self._resolve_file_imports(entities, by_file)
+        logger.info(f"[TIMING] _resolve_file_imports: {time.monotonic()-t0:.3f}s")
+
+        logger.info(f"[TIMING] resolve() TOTAL: {time.monotonic()-t_total:.3f}s for {len(entities)} entities")
         return entities
 
     def _build_name_index(self, entities: list[CodeEntity]) -> dict[str, list[CodeEntity]]:
@@ -87,6 +108,14 @@ class RelationshipResolver:
         For each file's imports, look up the module in module_entities
         and register all its entity names as reachable. O(files × imports).
         """
+        # Log module_entities size distribution to detect broad keys
+        if module_entities:
+            sizes = sorted(((k, len(v)) for k, v in module_entities.items()), key=lambda x: -x[1])
+            top5 = sizes[:5]
+            logger.info(f"[TIMING] module_entities top-5 keys by size: {top5}")
+            total_entries = sum(len(v) for v in module_entities.values())
+            logger.info(f"[TIMING] module_entities total entries across all keys: {total_entries}")
+
         # Collect unique imports per file
         file_imports: dict[str, set[str]] = {}
         for e in entities:
@@ -96,21 +125,26 @@ class RelationshipResolver:
                 if e.imports:
                     file_imports[e.file_path].update(e.imports)
 
+        total_imports = sum(len(v) for v in file_imports.values())
+        logger.info(f"[TIMING] _build_file_import_scopes: {len(file_imports)} files, {total_imports} total imports to resolve")
+
         file_scopes: dict[str, dict[str, CodeEntity]] = {}
+        module_hits = 0
+        module_entity_copies = 0
+
         for fp, imports in file_imports.items():
             scope: dict[str, CodeEntity] = {}
             for imp in imports:
-                # Try the import as a module stem lookup
-                # "from payment.service import X" → imp might be "payment.service" or "X"
-                # "import os.path" → imp is "os.path"
                 parts = imp.split(".")
 
                 # Check all suffixes: "a.b.c" → "a.b.c", "b.c", "c"
                 for i in range(len(parts)):
                     module_key = ".".join(parts[i:])
                     if module_key in module_entities:
-                        # Register all entities from that module as reachable
-                        for name, ent in module_entities[module_key].items():
+                        module_hits += 1
+                        ents_map = module_entities[module_key]
+                        module_entity_copies += len(ents_map)
+                        for name, ent in ents_map.items():
                             if name not in scope:
                                 scope[name] = ent
                         break
@@ -123,6 +157,8 @@ class RelationshipResolver:
                         scope[last] = candidates[0]
 
             file_scopes[fp] = scope
+
+        logger.info(f"[TIMING] _build_file_import_scopes done: {module_hits} module hits, {module_entity_copies} entity copies iterated")
         return file_scopes
 
     def _resolve_calls(
@@ -133,6 +169,9 @@ class RelationshipResolver:
         file_import_scope: dict[str, dict[str, CodeEntity]],
     ) -> None:
         """Resolve raw call names to entity IDs. All lookups are O(1) dict hits."""
+        total_calls = 0
+        total_resolved = 0
+        closest_path_calls = 0
         for entity in entities:
             if not entity.calls:
                 continue
@@ -142,6 +181,7 @@ class RelationshipResolver:
             import_scope = file_import_scope.get(entity.file_path, {})
 
             for call_name in entity.calls:
+                total_calls += 1
                 target = None
 
                 # 1. Same-file match
@@ -165,12 +205,16 @@ class RelationshipResolver:
                         if len(candidates) == 1:
                             target = candidates[0]
                         elif entity.file_path:
+                            closest_path_calls += 1
                             target = self._closest_by_path(entity.file_path, candidates)
 
                 if target and target.id != entity.id:
                     resolved.append(target.id)
+                    total_resolved += 1
 
             entity.resolved_calls = resolved
+
+        logger.info(f"[TIMING] _resolve_calls stats: {total_calls} calls, {total_resolved} resolved, {closest_path_calls} closest_path lookups")
 
     def _closest_by_path(self, source_path: str, candidates: list[CodeEntity]) -> CodeEntity:
         source_dir = os.path.dirname(source_path)
