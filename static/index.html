@@ -52,6 +52,7 @@
         .job-status.running { background: #0c2d6b; color: #58a6ff; }
         .job-status.failed { background: #3d1e20; color: #f85149; }
         .job-status.started { background: #0c2d6b; color: #58a6ff; }
+        .job-status.cancelled { background: #3d2e00; color: #d29922; }
         .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #30363d; border-top-color: #58a6ff; border-radius: 50%; animation: spin 0.8s linear infinite; margin-right: 8px; vertical-align: middle; }
         @keyframes spin { to { transform: rotate(360deg); } }
         .loading { color: #8b949e; font-size: 0.9rem; padding: 16px 0; }
@@ -550,14 +551,56 @@ function pollJob(id, out) {
         try {
             const r = await fetch(`${API}/index/${id}`);
             const d = await r.json();
+            let stageInfo = '';
+            if (d.stage === 'parsing') {
+                stageInfo = `<br>📂 Parsing: ${d.files_parsed}/${d.files_total} files → ${d.entities_parsed} entities`;
+            } else if (d.stage === 'resolving') {
+                stageInfo = `<br>🔗 Resolving cross-file relationships (${d.entities_parsed} entities)...`;
+            } else if (d.stage === 'embedding') {
+                stageInfo = `<br>🧠 Embedding: ${d.entities_embedded}/${d.entities_parsed} entities`;
+            } else if (d.stage === 'indexing') {
+                stageInfo = `<br>💾 Indexing: ${d.entities_indexed}/${d.entities_parsed} entities`;
+            }
+            const pct = d.entities_parsed > 0 && d.status === 'running'
+                ? Math.round((d.entities_indexed / d.entities_parsed) * 100)
+                : (d.status === 'completed' ? 100 : 0);
+            const cancelBtn = d.status === 'running'
+                ? `<button class="btn btn-secondary" style="border-color:#d29922;color:#d29922;margin-top:10px;padding:6px 16px;font-size:0.8rem;" onclick="cancelJob('${id}')">⏹ Cancel</button>`
+                : '';
             out.innerHTML = `<div class="result-card">
                 <strong>Job ${d.job_id}</strong> — <span class="job-status ${d.status}">${d.status}</span>
-                <br>Entities: ${d.entities_indexed}
+                ${d.status === 'running' ? `<div style="margin:8px 0;background:#21262d;border-radius:4px;height:6px;overflow:hidden;"><div style="width:${pct}%;height:100%;background:#238636;transition:width 0.5s;"></div></div>` : ''}
+                ${stageInfo}
+                <br>Entities indexed: ${d.entities_indexed}
                 ${d.error ? '<br><span style="color:#f85149;">'+escapeHtml(d.error)+'</span>' : ''}
+                ${cancelBtn}
             </div>`;
-            if (d.status === 'completed' || d.status === 'failed') { clearInterval(poll); checkHealth(); }
+            if (d.status === 'completed' || d.status === 'failed' || d.status === 'cancelled') { clearInterval(poll); checkHealth(); }
         } catch(e) { clearInterval(poll); }
-    }, 3000);
+    }, 2000);
+}
+
+async function cancelJob(jobId) {
+    if (!confirm('Cancel this indexing job? Entities already indexed will remain.')) return;
+    try {
+        const r = await fetch(`${API}/index/${jobId}/cancel`, { method: 'POST' });
+        const d = await r.json();
+        if (d.detail) { alert(d.detail); return; }
+    } catch(e) {
+        alert('Error cancelling job: ' + e.message);
+    }
+}
+
+async function cancelJobFromList(jobId) {
+    if (!confirm('Cancel this indexing job? Entities already indexed will remain.')) return;
+    try {
+        const r = await fetch(`${API}/index/${jobId}/cancel`, { method: 'POST' });
+        const d = await r.json();
+        if (d.detail) { alert(d.detail); }
+        loadJobs();
+    } catch(e) {
+        alert('Error cancelling job: ' + e.message);
+    }
 }
 
 // --- Jobs ---
@@ -577,7 +620,10 @@ async function loadJobs() {
                     <strong style="color:#58a6ff;">${j.job_id}</strong>${j.namespace ? `<span class="ns-badge">${escapeHtml(j.namespace)}</span>` : ''}
                     <div style="color:#8b949e;font-size:0.8rem;margin-top:4px;">${escapeHtml(j.source || 'unknown')} — ${j.entities_indexed ?? 0} entities</div>
                 </div>
-                <span class="job-status ${j.status}">${j.status}</span>
+                <div style="display:flex;align-items:center;gap:8px;">
+                    ${j.status === 'running' ? `<button class="btn btn-secondary" style="border-color:#d29922;color:#d29922;padding:4px 12px;font-size:0.75rem;" onclick="cancelJobFromList('${j.job_id}')">⏹ Cancel</button>` : ''}
+                    <span class="job-status ${j.status}">${j.status}</span>
+                </div>
             </div>
         `).join('');
     } catch(e) {

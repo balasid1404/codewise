@@ -53,18 +53,27 @@ class FaultLocalizerProd:
         self.cross_encoder = CrossEncoderRanker() if use_cross_encoder else None
         self.use_llm = use_llm
 
-    def index_codebase(self, path: str, workers: int = 4, namespace: str = None) -> int:
+    def index_codebase(self, path: str, workers: int = 4, namespace: str = None, progress_callback=None) -> int:
         """
-        4-stage pipeline:
-          Stage 1 (Parse):   N threads parse files → entities (CPU-bound, parallelizable)
-          Stage 2 (Resolve): Single pass resolves cross-file calls to entity IDs,
-                             builds inheritance chains, and file-level import graph
-          Stage 3 (Embed):   Batch-encode entities with CodeBERT (chunk-level)
-          Stage 4 (Index):   Bulk upsert to OpenSearch (I/O-bound)
+        4-stage pipeline with real-time progress reporting:
+          Stage 1 (Parse):   N threads parse files → entities
+          Stage 2 (Resolve): Cross-file call resolution, inheritance, import graph
+          Stage 3 (Embed):   Batch-encode with CodeBERT (chunk-level)
+          Stage 4 (Index):   Bulk upsert to OpenSearch
 
-        Stages 1-2 run sequentially (resolver needs all entities).
-        Stages 3-4 run concurrently via queues.
+        progress_callback(stage, **kwargs) is called with stage-level updates.
         """
+        from indexer.background_indexer import CancelledError
+
+        def report(stage, **kwargs):
+            if progress_callback:
+                try:
+                    progress_callback(stage, **kwargs)
+                except CancelledError:
+                    raise
+                except Exception:
+                    pass
+
         codebase = Path(path)
         if not namespace:
             namespace = codebase.name
@@ -83,7 +92,9 @@ class FaultLocalizerProd:
         resolver = RelationshipResolver()
 
         # ── Stage 1: Parse (multi-threaded) ──────────────────────────
+        report("parsing", files_total=len(all_files), files_parsed=0, entities_parsed=0)
         all_entities = []
+        files_done = [0]
 
         def parse_file(f):
             try:
@@ -109,26 +120,45 @@ class FaultLocalizerProd:
                         all_entities.append(ent)
                 except Exception as e:
                     logger.debug(f"Parse future error: {e}")
+                files_done[0] += 1
+                # report() checks cancel event via progress_callback
+                if files_done[0] % 10 == 0 or files_done[0] == len(all_files):
+                    try:
+                        report("parsing", files_total=len(all_files), files_parsed=files_done[0], entities_parsed=len(all_entities))
+                    except CancelledError:
+                        # Cancel remaining futures and propagate
+                        for f in futures:
+                            f.cancel()
+                        raise
 
         if not all_entities:
             return 0
 
         # ── Stage 2: Resolve cross-file relationships ────────────────
+        report("resolving", entities_parsed=len(all_entities))
         logger.info(f"Resolving relationships for {len(all_entities)} entities...")
         resolver.resolve(all_entities)
 
         # ── Stages 3-4: Embed + Index (concurrent via queues) ────────
         embed_q = queue.Queue(maxsize=32)
         total_indexed = [0]
+        entities_embedded = [0]
         errors = []
 
         def stage_embed():
             embed_batch_size = 256
-            for i in range(0, len(all_entities), embed_batch_size):
-                chunk = all_entities[i:i + embed_batch_size]
-                self._embed_entities_chunked(chunk)
-                embed_q.put(chunk)
-            embed_q.put(_DONE)
+            try:
+                for i in range(0, len(all_entities), embed_batch_size):
+                    chunk = all_entities[i:i + embed_batch_size]
+                    self._embed_entities_chunked(chunk)
+                    entities_embedded[0] += len(chunk)
+                    # report() checks cancel event via progress_callback
+                    report("embedding", entities_embedded=entities_embedded[0], entities_total=len(all_entities))
+                    embed_q.put(chunk)
+            except CancelledError:
+                pass
+            finally:
+                embed_q.put(_DONE)
 
         def stage_index():
             while True:
@@ -140,6 +170,10 @@ class FaultLocalizerProd:
                     for ent in batch:
                         self.ui_mapper.learn_from_entity(ent)
                     total_indexed[0] += len(batch)
+                    # report() checks cancel event via progress_callback
+                    report("indexing", entities_indexed=total_indexed[0], entities_total=len(all_entities))
+                except CancelledError:
+                    break
                 except Exception as e:
                     errors.append(str(e))
                     logger.error(f"Index error: {e}")

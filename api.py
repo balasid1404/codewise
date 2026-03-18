@@ -127,6 +127,11 @@ class JobStatusResponse(BaseModel):
     entities_indexed: int
     error: Optional[str] = None
     namespace: Optional[str] = None
+    stage: str = ""
+    files_parsed: int = 0
+    files_total: int = 0
+    entities_parsed: int = 0
+    entities_embedded: int = 0
 
 
 # Endpoints
@@ -155,11 +160,11 @@ async def index_codebase(request: IndexRequest):
         if request.s3_uri:
             local_path = s3_loader.download(request.s3_uri)
             try:
-                count = localizer.index_codebase(str(local_path), request.workers, namespace=namespace)
+                count = localizer.index_codebase(str(local_path), request.workers, namespace=namespace, progress_callback=progress_callback)
             finally:
                 s3_loader.cleanup(local_path)
         else:
-            count = localizer.index_codebase(request.codebase_path, request.workers, namespace=namespace)
+            count = localizer.index_codebase(request.codebase_path, request.workers, namespace=namespace, progress_callback=progress_callback)
 
         # Invalidate cache after reindex
         if cache:
@@ -214,7 +219,7 @@ async def index_from_upload(
             else:
                 index_path = extract_dir
 
-            count = localizer.index_codebase(index_path, workers, namespace=ns)
+            count = localizer.index_codebase(index_path, workers, namespace=ns, progress_callback=progress_callback)
 
             if cache:
                 cache.invalidate()
@@ -247,7 +252,29 @@ async def get_index_status(job_id: str):
         entities_indexed=job.entities_indexed,
         error=job.error,
         namespace=job.namespace,
+        stage=job.stage,
+        files_parsed=job.files_parsed,
+        files_total=job.files_total,
+        entities_parsed=job.entities_parsed,
+        entities_embedded=job.entities_embedded,
     )
+
+
+@app.post("/index/{job_id}/cancel")
+async def cancel_index_job(job_id: str):
+    """Cancel a running indexing job."""
+    job = background_indexer.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if job.status != IndexStatus.RUNNING:
+        raise HTTPException(status_code=400, detail=f"Job is not running (status: {job.status.value})")
+
+    cancelled = background_indexer.cancel_job(job_id)
+    if not cancelled:
+        raise HTTPException(status_code=400, detail="Could not cancel job")
+
+    return {"job_id": job_id, "message": "Cancellation requested. Job will stop after current batch."}
 
 
 @app.get("/index/jobs/list")
