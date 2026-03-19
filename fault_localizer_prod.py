@@ -217,8 +217,8 @@ class FaultLocalizerProd:
         error = self._extract_error(error_text)
         is_nl_query = error.exception_type in ("NLQuery", "Unknown") and not error.frames
 
-        # Auto-detect namespace from stack trace file paths
-        if not namespace:
+        # Auto-detect namespace from stack trace file paths (only for stack traces, not NL queries)
+        if not namespace and not is_nl_query:
             namespace = self._detect_namespace(error)
 
         if is_nl_query:
@@ -242,6 +242,21 @@ class FaultLocalizerProd:
                 entities = self.store.get_by_name(ident, namespace=namespace)
                 for entity in entities:
                     direct_candidates.append((entity, 1.0))
+
+            # Fast path: if identifiers produced enough exact matches, skip expensive
+                # cross-encoder + LLM pipeline. For rename/reference queries, exact matches
+                # are what the user wants — semantic reranking just adds latency.
+                if len(direct_candidates) >= top_k:
+                    merged = self._merge_candidates(direct_candidates, [])
+                    # Still do BM25 to catch references in method bodies, but skip vector search
+                    bm25_results = self.store.search_bm25(query, top_k=50, namespace=namespace)
+                    merged = self._merge_candidates(merged, bm25_results)
+                    # Light graph propagation only, skip cross-encoder
+                    merged = self.graph_ranker.propagate(merged, namespace=namespace)
+                    # Still use LLM for reason explanations if available
+                    if self.use_llm and self.ranker:
+                        return self.ranker.rank_and_explain(error, merged, top_k)
+                    return [{"entity": e, "score": s, "confidence": s, "reason": ""} for e, s in merged[:top_k]]
 
         search_results = self.store.search_hybrid(query, query_embedding, top_k=50, namespace=namespace)
         all_candidates = self._merge_candidates(direct_candidates, search_results)
@@ -339,10 +354,12 @@ class FaultLocalizerProd:
             if not namespace:
                 namespace = self._detect_namespace_from_image(image_extracted)
 
-        # Auto-detect namespace from text if still not set
+        # Auto-detect namespace from text if still not set — only for stack traces, not NL queries
         if not namespace and error_text:
             error = self._extract_error(error_text)
-            namespace = self._detect_namespace(error)
+            has_frames = bool(error.frames)
+            if has_frames:
+                namespace = self._detect_namespace(error)
 
         # Build combined query
         all_candidates = []
@@ -365,9 +382,34 @@ class FaultLocalizerProd:
                         all_candidates.append((entity, 1.0))
             else:
                 # Extract identifiers from NL text for exact-match lookups
-                for ident in self._extract_identifiers(error_text):
+                identifiers = self._extract_identifiers(error_text)
+                for ident in identifiers:
                     for entity in self.store.get_by_name(ident, namespace=namespace):
                         all_candidates.append((entity, 1.0))
+
+                # Fast path: if identifiers produced enough exact matches and no image,
+                # skip expensive cross-encoder. Return exact + BM25 results with LLM reasons.
+                if len(all_candidates) >= top_k and not image_path:
+                    bm25_results = self.store.search_bm25(text_query, top_k=50, namespace=namespace)
+                    merged = self._merge_candidates(all_candidates, bm25_results)
+                    merged = self.graph_ranker.propagate(merged, namespace=namespace)
+                    # Still use LLM for reason explanations if available
+                    if self.use_llm and self.ranker:
+                        pseudo_error = ExtractedError(
+                            exception_type="NLQuery",
+                            message=error_text[:300],
+                            frames=[],
+                            raw_text=error_text
+                        )
+                        results = self.ranker.rank_and_explain(pseudo_error, merged, top_k)
+                    else:
+                        results = [{"entity": e, "score": s, "confidence": s, "reason": ""} for e, s in merged[:top_k]]
+                    return {
+                        "results": results,
+                        "image_extracted": None,
+                        "namespace_used": namespace,
+                        "namespace_source": "user" if namespace else "all",
+                    }
 
             all_candidates.extend(self.store.search_hybrid(text_query, text_embedding, top_k=50, namespace=namespace))
 

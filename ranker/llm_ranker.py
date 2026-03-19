@@ -16,7 +16,7 @@ class LLMRanker:
         top_k: int = 5
     ) -> list[dict]:
         is_nl_query = error.exception_type in ("NLQuery", "Unknown") and not error.frames
-        prompt = self._build_nl_prompt(error, candidates) if is_nl_query else self._build_prompt(error, candidates)
+        prompt = self._build_nl_prompt(error, candidates, top_k) if is_nl_query else self._build_prompt(error, candidates, top_k)
 
         body = {
             "messages": [{"role": "user", "content": [{"text": prompt}]}],
@@ -32,10 +32,10 @@ class LLMRanker:
         content = response["output"]["message"]["content"][0]["text"]
         return self._parse_response(content, candidates, top_k)
 
-    def _build_nl_prompt(self, error: ExtractedError, candidates: list[tuple[CodeEntity, float]]) -> str:
+    def _build_nl_prompt(self, error: ExtractedError, candidates: list[tuple[CodeEntity, float]], top_k: int = 5) -> str:
         candidate_text = "\n\n".join([
             f"[{i}] {e.full_name} ({e.file_path}:{e.start_line})\n```\n{e.signature}\n{e.body[:500]}...\n```"
-            for i, (e, _) in enumerate(candidates[:15])
+            for i, (e, _) in enumerate(candidates[:max(15, top_k + 5)])
         ])
 
         return f"""You are a code navigation expert. A developer is asking a question about their codebase. Rank the candidate code locations by relevance to their question.
@@ -46,7 +46,7 @@ DEVELOPER QUESTION:
 CANDIDATE CODE LOCATIONS:
 {candidate_text}
 
-Respond with JSON array of top 5 most relevant code locations:
+Respond with JSON array of top {top_k} most relevant code locations:
 [
   {{"index": 0, "confidence": 0.9, "reason": "brief explanation of why this code is relevant"}},
   ...
@@ -58,10 +58,10 @@ Consider:
 3. Prefer methods whose names and signatures clearly relate to the question
 4. Consider the file path — it often reveals the module's purpose"""
 
-    def _build_prompt(self, error: ExtractedError, candidates: list[tuple[CodeEntity, float]]) -> str:
+    def _build_prompt(self, error: ExtractedError, candidates: list[tuple[CodeEntity, float]], top_k: int = 5) -> str:
         candidate_text = "\n\n".join([
             f"[{i}] {e.full_name} ({e.file_path}:{e.start_line})\n```\n{e.signature}\n{e.body[:500]}...\n```"
-            for i, (e, _) in enumerate(candidates[:15])
+            for i, (e, _) in enumerate(candidates[:max(15, top_k + 5)])
         ])
 
         return f"""You are a fault localization expert. Given a stack trace and candidate code locations, rank the most likely root causes.
@@ -74,7 +74,7 @@ EXCEPTION: {error.exception_type}: {error.message}
 CANDIDATE METHODS:
 {candidate_text}
 
-Respond with JSON array of top 5 most likely fault locations:
+Respond with JSON array of top {top_k} most likely fault locations:
 [
   {{"index": 0, "confidence": 0.9, "reason": "brief explanation"}},
   ...
