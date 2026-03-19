@@ -601,6 +601,7 @@ async def bulk_import_entities(request: Request):
             resolved_calls=ed.get("resolved_calls", []),
             base_classes=ed.get("base_classes", []),
             file_imports=ed.get("file_imports", []),
+            references=ed.get("references", []),
         )
         entities.append(ent)
 

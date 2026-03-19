@@ -93,7 +93,8 @@ def embed_entities(entities, model_name="microsoft/codebert-base", batch_size=25
 
     for ent in entities:
         body_len = len(ent.body) if ent.body else 0
-        if body_len < 30 and ent.entity_type.value not in ("field", "enum"):
+        is_static_init = ent.name.startswith("<static_init")
+        if body_len < 30 and ent.entity_type.value not in ("field", "enum") and not is_static_init:
             ent.embedding = [0.0] * 768
             trivial += 1
             continue
@@ -162,6 +163,7 @@ def push_to_api(entities, api_url, namespace, batch_size=200):
                     "resolved_calls": e.resolved_calls,
                     "base_classes": e.base_classes,
                     "file_imports": e.file_imports,
+                    "references": e.references,
                 }
                 for e in batch
             ],
