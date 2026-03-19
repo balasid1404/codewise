@@ -412,6 +412,7 @@ async def localize_unified(
             entity = r["entity"]
             confidence = r.get("confidence", r.get("score", 0))
             locations.append({
+                "entity_id": entity.id,
                 "name": entity.name,
                 "full_name": entity.full_name,
                 "file_path": entity.file_path,
