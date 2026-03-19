@@ -181,7 +181,8 @@ class OpenSearchStore(VectorStore):
             "bool": {
                 "should": [
                     {"term": {"name": name}},
-                    {"wildcard": {"full_name": f"*{name}"}}
+                    {"wildcard": {"full_name": f"*{name}"}},
+                    {"term": {"class_name": name}},
                 ]
             }
         }

@@ -208,6 +208,7 @@ class FaultLocalizerProd:
         Pipeline:
           1. Extract error / detect NL query
           2. Weighted stack frame scoring (top frame + first app frame boosted)
+          2b. Identifier extraction from NL queries (exact-match boost)
           3. Hybrid retrieval (BM25 + vector)
           4. Graph-based score propagation (callers/callees of suspicious code)
           5. Cross-encoder reranking (precise query-document scoring)
@@ -232,6 +233,15 @@ class FaultLocalizerProd:
         direct_candidates = []
         if not is_nl_query:
             direct_candidates = self._weighted_frame_lookup(error, namespace)
+
+        # For NL queries, extract identifier-like tokens and do exact-match lookups
+        # This ensures constants like HAWKFIRE_ALL_DEVICES_ANNUAL surface when mentioned by name
+        if is_nl_query:
+            identifiers = self._extract_identifiers(error_text)
+            for ident in identifiers:
+                entities = self.store.get_by_name(ident, namespace=namespace)
+                for entity in entities:
+                    direct_candidates.append((entity, 1.0))
 
         search_results = self.store.search_hybrid(query, query_embedding, top_k=50, namespace=namespace)
         all_candidates = self._merge_candidates(direct_candidates, search_results)
@@ -352,6 +362,11 @@ class FaultLocalizerProd:
             if not is_nl_query:
                 for frame in error.frames:
                     for entity in self.store.get_by_name(frame.method_name, namespace=namespace):
+                        all_candidates.append((entity, 1.0))
+            else:
+                # Extract identifiers from NL text for exact-match lookups
+                for ident in self._extract_identifiers(error_text):
+                    for entity in self.store.get_by_name(ident, namespace=namespace):
                         all_candidates.append((entity, 1.0))
 
             all_candidates.extend(self.store.search_hybrid(text_query, text_embedding, top_k=50, namespace=namespace))
@@ -607,6 +622,48 @@ class FaultLocalizerProd:
                 frames=[],
                 raw_text=error_text
             )
+
+    # ── Identifier extraction for NL queries ─────────────────────
+
+    def _extract_identifiers(self, text: str) -> list[str]:
+        """Extract code identifier-like tokens from natural language text.
+
+        Finds patterns that look like code identifiers:
+        - UPPER_SNAKE_CASE constants (e.g. HAWKFIRE_ALL_DEVICES_ANNUAL)
+        - CamelCase class/method names (e.g. PlanIdFake, getSubscriptionModel)
+        - dotted.qualified.names (e.g. com.amazon.digital.music)
+        - quoted identifiers (e.g. "HF_AD_AND")
+
+        Returns deduplicated list, longest identifiers first (more specific = better match).
+        """
+        import re
+        identifiers = set()
+
+        # UPPER_SNAKE_CASE: 2+ uppercase segments joined by underscores
+        for m in re.finditer(r'\b([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)\b', text):
+            identifiers.add(m.group(1))
+
+        # CamelCase: starts with uppercase, has at least one lowercase→uppercase transition
+        for m in re.finditer(r'\b([A-Z][a-z]+(?:[A-Z][a-z0-9]*)+)\b', text):
+            identifiers.add(m.group(1))
+
+        # camelCase methods: starts lowercase, has uppercase transition
+        for m in re.finditer(r'\b([a-z][a-z0-9]*(?:[A-Z][a-z0-9]*)+)\b', text):
+            ident = m.group(1)
+            # Skip common English words that look camelCase-ish
+            if len(ident) > 6:
+                identifiers.add(ident)
+
+        # Quoted identifiers: "HF_AD_AND", 'PLAN_ID'
+        for m in re.finditer(r'["\']([A-Za-z_][A-Za-z0-9_]+)["\']', text):
+            identifiers.add(m.group(1))
+
+        # Dotted qualified names: com.amazon.digital.music.subs
+        for m in re.finditer(r'\b([a-z][a-z0-9]*(?:\.[a-z][a-z0-9]*){2,})\b', text):
+            identifiers.add(m.group(1))
+
+        # Sort longest first — more specific identifiers are better matches
+        return sorted(identifiers, key=len, reverse=True)[:20]
 
     def _merge_candidates(
         self,
