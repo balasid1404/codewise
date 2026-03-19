@@ -502,8 +502,9 @@ class FaultLocalizerProd:
 
         for ent in entities:
             # Skip trivial entities — getters, setters, tiny stubs
+            # But always embed fields/enums (constants are short but context-rich)
             body_len = len(ent.body) if ent.body else 0
-            if body_len < 30:
+            if body_len < 30 and ent.entity_type.value not in ("field", "enum"):
                 ent.embedding = [0.0] * 768
                 trivial_count += 1
                 continue

@@ -1,0 +1,48 @@
+TESTING-ONLY CHANGES — Revert after testing
+=============================================
+
+These changes were added for performance debugging and local indexing testing.
+They are NOT needed for production and can be safely reverted.
+
+Git commits (newest first):
+  c66c0d4 - Add bulk-import endpoint and local indexing script
+  e9ecd67 - Fix logging: add basicConfig(INFO) and uvicorn --log-level info
+  c80b426 - Add timing instrumentation to relationship resolver
+
+=== HOW TO REVERT ALL ===
+
+  git revert c66c0d4 e9ecd67 c80b426 --no-commit
+  git commit -m "Revert testing-only changes"
+  git push origin main
+
+Or revert to the commit before all testing changes:
+
+  git reset --hard 73b1e75
+  git push origin main --force
+
+=== CHANGES BY FILE ===
+
+1. fault-localization/api.py
+   - Added: import logging + logging.basicConfig(level=logging.INFO, ...)
+   - Added: POST /index/bulk-import endpoint (~40 lines before @app.get("/health"))
+   TO REVERT: Remove the logging import/basicConfig line and the entire
+   @app.post("/index/bulk-import") function + its async def.
+
+2. fault-localization/Dockerfile
+   - Changed: CMD line added "--log-level", "info" args
+   TO REVERT: Change CMD back to:
+     CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8080"]
+
+3. fault-localization/indexer/relationship_resolver.py
+   - Added: import time
+   - Added: Timing logs (logger.info with [TIMING] prefix) in resolve() method
+   - Added: Timing logs + stats counters in _build_file_import_scopes()
+   - Added: Stats counters in _resolve_calls()
+   TO REVERT: Remove "import time", all lines containing "[TIMING]",
+   and the counter variables (total_calls, total_resolved, closest_path_calls,
+   module_hits, module_entity_copies, sizes, top5, total_entries, total_imports).
+
+4. fault-localization/scripts/local_index.py (NEW FILE)
+   - Entire file is testing-only
+   TO REVERT: Delete the file:
+     rm scripts/local_index.py

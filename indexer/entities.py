@@ -7,6 +7,8 @@ class EntityType(Enum):
     FUNCTION = "function"
     METHOD = "method"
     CLASS = "class"
+    ENUM = "enum"
+    FIELD = "field"
 
 
 @dataclass
@@ -60,6 +62,9 @@ class CodeEntity:
             parts.append(self.docstring)
         if self.class_name:
             parts.append(self.class_name)
+        # For fields/enums, include body (the value IS the identity)
+        if self.entity_type.value in ("field", "enum") and self.body:
+            parts.append(self.body[:500])
         return " ".join(parts)
 
     def to_embedding_text(self) -> str:

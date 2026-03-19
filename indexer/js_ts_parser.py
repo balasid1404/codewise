@@ -104,18 +104,52 @@ class JsTsParser:
             return
 
         if ntype in ("lexical_declaration", "variable_declaration"):
-            # Check for arrow functions: const foo = (...) => { ... }
             for decl in node.children:
                 if decl.type == "variable_declarator":
                     name_node = decl.child_by_field_name("name")
                     value_node = decl.child_by_field_name("value")
                     if name_node and value_node and value_node.type == "arrow_function":
+                        # Arrow function: const foo = (...) => { ... }
                         name = name_node.text.decode("utf-8")
                         params = self._get_params(value_node, source)
                         sig = f"const {name} = ({params}) =>"
                         ent = self._make_entity(value_node, file_path, source, name, EntityType.FUNCTION, sig, class_name)
                         ent.calls = self._extract_calls(value_node, source)
                         entities.append(ent)
+                    elif name_node and value_node:
+                        # Non-function constant: const API_URL = "...", const CONFIG = {...}
+                        name = name_node.text.decode("utf-8")
+                        # Only extract UPPER_CASE or exported constants (skip loop vars like `i`)
+                        if name.isupper() or name[0].isupper() or ntype == "lexical_declaration":
+                            # Determine keyword (const/let/var)
+                            keyword = "const"
+                            for child in node.children:
+                                if child.type in ("const", "let", "var"):
+                                    keyword = child.type
+                                    break
+                            sig = f"{keyword} {name}"
+                            ent = self._make_entity(decl, file_path, source, name, EntityType.FIELD, sig, class_name)
+                            entities.append(ent)
+            return
+
+        # TypeScript enum declarations
+        if ntype == "enum_declaration":
+            name = self._child_text(node, "identifier", source)
+            if name:
+                sig = f"enum {name}"
+                ent = self._make_entity(node, file_path, source, name, EntityType.ENUM, sig, class_name)
+                entities.append(ent)
+                # Extract enum members
+                body_node = self._child_by_type(node, "enum_body")
+                if body_node:
+                    for member in body_node.children:
+                        if member.type == "enum_member" or member.type == "property_identifier":
+                            member_name_node = member.child_by_field_name("name") if member.type == "enum_member" else member
+                            if member_name_node:
+                                mname = member_name_node.text.decode("utf-8")
+                                msig = f"{name}.{mname}"
+                                ment = self._make_entity(member, file_path, source, mname, EntityType.FIELD, msig, name)
+                                entities.append(ment)
             return
 
         if ntype == "export_statement":

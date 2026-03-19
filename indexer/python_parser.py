@@ -32,6 +32,18 @@ class PythonParser:
                         ent = self._extract_function(item, file_path, lines, node.name)
                         ent.imports = file_imports
                         entities.append(ent)
+                    elif isinstance(item, ast.Assign | ast.AnnAssign):
+                        # Class-level attributes / constants
+                        for ent in self._extract_assignment(item, file_path, lines, node.name):
+                            ent.imports = file_imports
+                            entities.append(ent)
+
+        # Module-level constants (top-level assignments with UPPER_CASE names)
+        for node in ast.iter_child_nodes(tree):
+            if isinstance(node, ast.Assign | ast.AnnAssign):
+                for ent in self._extract_assignment(node, file_path, lines, None):
+                    ent.imports = file_imports
+                    entities.append(ent)
 
         return entities
 
@@ -112,3 +124,60 @@ class PythonParser:
                 elif isinstance(child.func, ast.Attribute):
                     calls.append(child.func.attr)
         return list(set(calls))
+
+    def _extract_assignment(self, node, file_path: Path, lines: list[str], class_name: str | None) -> list[CodeEntity]:
+        """Extract constants and class attributes from assignments.
+
+        Captures:
+        - Module-level: MAX_RETRIES = 3, DEFAULT_CONFIG = {...}
+        - Class-level: STATUS_ACTIVE = "active", enum members
+        - Annotated: name: str = "value"
+
+        Only extracts UPPER_CASE names at module level (conventions for constants).
+        At class level, extracts all assignments (class attributes matter for search).
+        """
+        entities = []
+        names = []
+
+        if isinstance(node, ast.AnnAssign) and node.target:
+            if isinstance(node.target, ast.Name):
+                names.append(node.target.id)
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    names.append(target.id)
+
+        for name in names:
+            # Module-level: only UPPER_CASE (constants)
+            # Class-level: all assignments (attributes, enum members, etc.)
+            if class_name is None and not name.isupper() and not name.upper() == name:
+                # Skip non-constant module-level assignments like `logger = ...`
+                if not any(c == '_' for c in name) or not name[0].isupper():
+                    continue
+
+            start_line = node.lineno
+            end_line = node.end_lineno or start_line
+            body = "\n".join(lines[start_line - 1:end_line])
+
+            # Build signature
+            if isinstance(node, ast.AnnAssign) and node.annotation:
+                ann = ast.unparse(node.annotation)
+                sig = f"{name}: {ann}"
+            else:
+                sig = f"{name} = ..."
+
+            entity_id = hashlib.md5(f"{file_path}:{name}:{start_line}".encode()).hexdigest()
+
+            entities.append(CodeEntity(
+                id=entity_id,
+                name=name,
+                entity_type=EntityType.FIELD,
+                file_path=str(file_path),
+                start_line=start_line,
+                end_line=end_line,
+                signature=sig,
+                body=body,
+                class_name=class_name,
+            ))
+
+        return entities

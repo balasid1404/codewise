@@ -93,7 +93,7 @@ def embed_entities(entities, model_name="microsoft/codebert-base", batch_size=25
 
     for ent in entities:
         body_len = len(ent.body) if ent.body else 0
-        if body_len < 30:
+        if body_len < 30 and ent.entity_type.value not in ("field", "enum"):
             ent.embedding = [0.0] * 768
             trivial += 1
             continue
