@@ -59,6 +59,7 @@ class OpenSearchStore(VectorStore):
                             "annotations": {"type": "keyword"},
                             "base_classes": {"type": "keyword"},
                             "file_imports": {"type": "keyword"},
+                            "references": {"type": "keyword"},
                         }
                     }
                 }
@@ -92,6 +93,7 @@ class OpenSearchStore(VectorStore):
                     "annotations": entity.annotations,
                     "base_classes": entity.base_classes,
                     "file_imports": entity.file_imports,
+                    "references": entity.references,
                 }
             }
             actions.append(doc)
@@ -193,6 +195,40 @@ class OpenSearchStore(VectorStore):
             body={"size": 100, "query": query}
         )
         return [e for e, _ in self._hits_to_entities(response["hits"]["hits"])]
+
+    def search_references(self, identifier: str, top_k: int = 200, namespace: str = None) -> list[tuple[CodeEntity, float]]:
+        """Gap 1: Find all entities that reference a given constant/field name.
+
+        Searches the 'references' keyword field (exact match) and falls back
+        to BM25 body/search_text search for the identifier string.
+        Returns ALL matching entities (not just top-k by relevance).
+        """
+        # Exact match on the references keyword field
+        must_clauses = [
+            {"bool": {"should": [
+                {"term": {"references": identifier}},
+                {"term": {"name": identifier}},
+                {"match_phrase": {"body": identifier}},
+                {"match_phrase": {"search_text": identifier}},
+            ]}}
+        ]
+        if namespace:
+            query = {"bool": {"must": must_clauses, "filter": {"term": {"namespace": namespace}}}}
+        else:
+            query = {"bool": {"must": must_clauses}}
+
+        response = self.client.search(
+            index=self.INDEX_NAME,
+            body={"size": top_k, "query": query}
+        )
+        return self._hits_to_entities(response["hits"]["hits"])
+
+    def search_references_cross_namespace(self, identifier: str, top_k: int = 200) -> list[tuple[CodeEntity, float]]:
+        """Gap 2: Search for references across ALL namespaces.
+
+        For rename/refactor queries, we need completeness across repos.
+        """
+        return self.search_references(identifier, top_k=top_k, namespace=None)
 
     def list_namespaces(self) -> list[dict]:
         """List all indexed namespaces with entity counts."""
@@ -350,6 +386,7 @@ class OpenSearchStore(VectorStore):
                 resolved_calls=src.get("resolved_calls", []),
                 base_classes=src.get("base_classes", []),
                 file_imports=src.get("file_imports", []),
+                references=src.get("references", []),
             )
             results.append((entity, hit["_score"]))
         return results

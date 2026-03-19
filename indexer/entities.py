@@ -33,6 +33,7 @@ class CodeEntity:
     resolved_calls: list[str] = field(default_factory=list)  # resolved entity IDs this calls
     base_classes: list[str] = field(default_factory=list)  # parent classes (inheritance chain)
     file_imports: list[str] = field(default_factory=list)  # file paths this file imports from
+    references: list[str] = field(default_factory=list)  # constants/fields/types referenced in body
 
     @property
     def full_name(self) -> str:
@@ -65,6 +66,9 @@ class CodeEntity:
         # For fields/enums, include body (the value IS the identity)
         if self.entity_type.value in ("field", "enum") and self.body:
             parts.append(self.body[:500])
+        # Include referenced constants/fields for BM25 discoverability
+        if self.references:
+            parts.extend(self.references)
         return " ".join(parts)
 
     def to_embedding_text(self) -> str:

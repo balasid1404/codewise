@@ -1,6 +1,7 @@
 """Production fault localizer with OpenSearch backend."""
 
 import queue
+import re
 import threading
 import logging
 from pathlib import Path
@@ -22,6 +23,36 @@ from ranker.graph_ranker import GraphRanker
 from ranker.cross_encoder_ranker import CrossEncoderRanker
 
 logger = logging.getLogger(__name__)
+
+# Rename/refactor intent keywords
+_RENAME_KEYWORDS = {
+    "rename", "renaming", "refactor", "refactoring", "replace", "replacing",
+    "update", "updating", "change", "changing", "migrate", "migrating",
+    "move", "moving", "deprecate", "deprecating",
+}
+
+# Reference/usage search keywords — triggers exhaustive mode even without rename intent
+_REFERENCE_KEYWORDS = {
+    "find", "search", "locate", "where", "which", "usage", "usages",
+    "reference", "references", "referenced", "uses", "used", "using",
+    "occurrences", "instances", "affected", "impacts", "depends",
+    "callers", "consumers", "dependents", "files",
+}
+
+# Patterns that indicate a rename/reference query (A → B, A to B)
+_RENAME_PATTERNS = [
+    re.compile(r'\brename\b.*\bto\b', re.IGNORECASE),
+    re.compile(r'\bchange\b.*\bto\b', re.IGNORECASE),
+    re.compile(r'\breplace\b.*\bwith\b', re.IGNORECASE),
+    re.compile(r'\bupdate\b.*\bto\b', re.IGNORECASE),
+    re.compile(r'\bmigrate\b.*\bto\b', re.IGNORECASE),
+    re.compile(r'\b(\w+)\s*(?:→|->|=>)\s*(\w+)', re.IGNORECASE),
+    # "find all usages of X", "where is X used", "files that reference X"
+    re.compile(r'\b(?:find|search|locate)\b.*\b(?:usage|reference|occurrence)', re.IGNORECASE),
+    re.compile(r'\bwhere\b.*\b(?:used|referenced|called|defined)', re.IGNORECASE),
+    re.compile(r'\b(?:files?|classes?|methods?)\b.*\b(?:that|which)\b.*\b(?:use|reference|contain|import)', re.IGNORECASE),
+    re.compile(r'\b(?:all|every)\b.*\b(?:usage|reference|occurrence|place)', re.IGNORECASE),
+]
 
 # Library path patterns — frames matching these are deprioritized
 _LIB_PATTERNS = (
@@ -207,15 +238,20 @@ class FaultLocalizerProd:
 
         Pipeline:
           1. Extract error / detect NL query
+          1b. Detect rename/refactor intent → exhaustive reference mode
           2. Weighted stack frame scoring (top frame + first app frame boosted)
           2b. Identifier extraction from NL queries (exact-match boost)
           3. Hybrid retrieval (BM25 + vector)
+          3b. Reference search across all namespaces (for rename queries)
           4. Graph-based score propagation (callers/callees of suspicious code)
           5. Cross-encoder reranking (precise query-document scoring)
           6. LLM reranking (final intelligence pass)
         """
         error = self._extract_error(error_text)
         is_nl_query = error.exception_type in ("NLQuery", "Unknown") and not error.frames
+
+        # Gap 4: Detect rename/refactor intent
+        is_rename_query = is_nl_query and self._detect_rename_intent(error_text)
 
         # Auto-detect namespace from stack trace file paths (only for stack traces, not NL queries)
         if not namespace and not is_nl_query:
@@ -224,7 +260,6 @@ class FaultLocalizerProd:
         if is_nl_query:
             query = error_text.strip()
         else:
-            # Stack frame weighting: build query with weighted frame contributions
             query = self._build_weighted_query(error)
 
         query_embedding = self.encoder.encode(query).tolist()
@@ -235,25 +270,28 @@ class FaultLocalizerProd:
             direct_candidates = self._weighted_frame_lookup(error, namespace)
 
         # For NL queries, extract identifier-like tokens and do exact-match lookups
-        # This ensures constants like HAWKFIRE_ALL_DEVICES_ANNUAL surface when mentioned by name
         if is_nl_query:
             identifiers = self._extract_identifiers(error_text)
+
+            if is_rename_query and identifiers:
+                # Gap 1 + 2 + 4: Exhaustive reference search for rename queries
+                return self._localize_rename(
+                    error_text, error, identifiers, query, query_embedding,
+                    namespace, top_k
+                )
+
             for ident in identifiers:
                 entities = self.store.get_by_name(ident, namespace=namespace)
                 for entity in entities:
                     direct_candidates.append((entity, 1.0))
 
-            # Fast path: if identifiers produced enough exact matches, skip expensive
-                # cross-encoder + LLM pipeline. For rename/reference queries, exact matches
-                # are what the user wants — semantic reranking just adds latency.
+                # Fast path: if identifiers produced enough exact matches, skip expensive
+                # cross-encoder + LLM pipeline.
                 if len(direct_candidates) >= top_k:
                     merged = self._merge_candidates(direct_candidates, [])
-                    # Still do BM25 to catch references in method bodies, but skip vector search
                     bm25_results = self.store.search_bm25(query, top_k=50, namespace=namespace)
                     merged = self._merge_candidates(merged, bm25_results)
-                    # Light graph propagation only, skip cross-encoder
                     merged = self.graph_ranker.propagate(merged, namespace=namespace)
-                    # Still use LLM for reason explanations if available
                     if self.use_llm and self.ranker:
                         return self.ranker.rank_and_explain(error, merged, top_k)
                     return [{"entity": e, "score": s, "confidence": s, "reason": ""} for e, s in merged[:top_k]]
@@ -272,6 +310,125 @@ class FaultLocalizerProd:
             return self.ranker.rank_and_explain(error, all_candidates, top_k)
         else:
             return [{"entity": e, "score": s, "reason": ""} for e, s in all_candidates[:top_k]]
+
+    # ── Gap 4: Rename intent detection ───────────────────────────
+
+    def _detect_rename_intent(self, text: str) -> bool:
+        """Detect if the query is a rename/refactor/reference-finding task.
+
+        Triggers exhaustive mode for:
+        - Rename queries: "rename X to Y", "change X to Y"
+        - Reference queries: "find all usages of X", "where is X used"
+        - Any query with identifiers + action keywords implying completeness
+        """
+        text_lower = text.lower()
+        words = set(re.findall(r'[a-z]+', text_lower))
+
+        identifiers = self._extract_identifiers(text)
+        if not identifiers:
+            return False
+
+        # Check for rename/change keywords
+        if words & _RENAME_KEYWORDS:
+            return True
+
+        # Check for reference/usage keywords
+        if words & _REFERENCE_KEYWORDS:
+            return True
+
+        # Check for structural patterns (X to Y, find usages of X, etc.)
+        for pattern in _RENAME_PATTERNS:
+            if pattern.search(text):
+                return True
+
+        return False
+
+    # ── Gaps 1+2+4: Exhaustive rename/reference localization ────
+
+    def _localize_rename(
+        self,
+        error_text: str,
+        error: 'ExtractedError',
+        identifiers: list[str],
+        query: str,
+        query_embedding: list[float],
+        namespace: str | None,
+        top_k: int,
+    ) -> list[dict]:
+        """Exhaustive reference search for rename/refactor queries.
+
+        Strategy:
+        1. Find definitions of the identifier (exact name match)
+        2. Search references field across ALL namespaces (Gap 2: cross-namespace)
+        3. BM25 body search for the identifier string (Gap 1: reference search)
+        4. Search file_imports to find files importing the defining file
+        5. Graph propagation to find transitive dependents
+        6. Dedupe by file, return ALL affected files (not just top-k)
+        """
+        all_candidates: list[tuple[CodeEntity, float]] = []
+
+        for ident in identifiers:
+            # 1. Definition lookup (exact name match) — search all namespaces
+            definitions = self.store.get_by_name(ident, namespace=None)
+            for entity in definitions:
+                all_candidates.append((entity, 1.0))
+
+            # 2. Gap 1+2: Reference search across all namespaces
+            ref_results = self.store.search_references_cross_namespace(ident, top_k=200)
+            for entity, score in ref_results:
+                all_candidates.append((entity, max(0.9, score)))
+
+            # 3. BM25 body search for the identifier (catches references in method bodies)
+            bm25_results = self.store.search_bm25(ident, top_k=100, namespace=None)
+            for entity, score in bm25_results:
+                # Boost if the identifier appears literally in the body
+                body = entity.body or ""
+                if ident in body:
+                    all_candidates.append((entity, 0.95))
+                else:
+                    all_candidates.append((entity, score * 0.5))
+
+        # 4. Find files that import the defining files
+        defining_files = set()
+        for entity, score in all_candidates:
+            if score >= 0.95:
+                defining_files.add(entity.file_path)
+
+        if defining_files:
+            for def_file in defining_files:
+                # Search for entities whose file_imports include this file
+                try:
+                    resp = self.store.client.search(
+                        index=self.store.INDEX_NAME,
+                        body={
+                            "size": 100,
+                            "query": {"term": {"file_imports": def_file}}
+                        }
+                    )
+                    importers = self.store._hits_to_entities(resp["hits"]["hits"])
+                    for entity, _ in importers:
+                        # Check if any identifier appears in the body
+                        body = entity.body or ""
+                        for ident in identifiers:
+                            if ident in body:
+                                all_candidates.append((entity, 0.85))
+                                break
+                except Exception as e:
+                    logger.debug(f"Import search failed: {e}")
+
+        # 5. Merge and dedupe
+        merged = self._merge_candidates(all_candidates, [])
+
+        # 6. Graph propagation (lighter — just 1 hop for rename queries)
+        merged = self.graph_ranker.propagate(merged, namespace=None)
+
+        # For rename queries, return more results than usual top_k
+        # since completeness matters more than precision
+        effective_top_k = max(top_k, len([e for e, s in merged if s >= 0.5]))
+
+        if self.use_llm and self.ranker:
+            return self.ranker.rank_and_explain(error, merged, effective_top_k)
+        return [{"entity": e, "score": s, "confidence": s, "reason": ""} for e, s in merged[:effective_top_k]]
 
     def localize_from_image(self, image_path: str, top_k: int = 5, context: str = "", namespace: str = None) -> list[dict]:
         """Localize fault from a screenshot."""
@@ -383,6 +540,21 @@ class FaultLocalizerProd:
             else:
                 # Extract identifiers from NL text for exact-match lookups
                 identifiers = self._extract_identifiers(error_text)
+
+                # Gap 4: Detect rename intent in unified path too
+                is_rename = self._detect_rename_intent(error_text)
+                if is_rename and identifiers and not image_path:
+                    results = self._localize_rename(
+                        error_text, error, identifiers, text_query, text_embedding,
+                        namespace, top_k
+                    )
+                    return {
+                        "results": results,
+                        "image_extracted": None,
+                        "namespace_used": namespace,
+                        "namespace_source": "rename-cross-namespace",
+                    }
+
                 for ident in identifiers:
                     for entity in self.store.get_by_name(ident, namespace=namespace):
                         all_candidates.append((entity, 1.0))
@@ -560,8 +732,10 @@ class FaultLocalizerProd:
         for ent in entities:
             # Skip trivial entities — getters, setters, tiny stubs
             # But always embed fields/enums (constants are short but context-rich)
+            # and static initializer blocks (they contain map population code)
             body_len = len(ent.body) if ent.body else 0
-            if body_len < 30 and ent.entity_type.value not in ("field", "enum"):
+            is_static_init = ent.name.startswith("<static_init")
+            if body_len < 30 and ent.entity_type.value not in ("field", "enum") and not is_static_init:
                 ent.embedding = [0.0] * 768
                 trivial_count += 1
                 continue

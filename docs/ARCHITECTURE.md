@@ -78,8 +78,12 @@ Source Code (.py/.java/.js/.ts/.html)
 │  6. Resolve inheritance chains      │
 │  7. Resolve file-level imports      │
 │                                     │
+│  8. Resolve reference edges          │
+│     (constant/field → entity IDs)   │
+│                                     │
 │  Output: resolved_calls,            │
-│  base_classes, file_imports          │
+│  base_classes, file_imports,         │
+│  references                          │
 └──────────────┬──────────────────────┘
                ▼
 ┌─────────────────────────────────────┐
@@ -134,7 +138,7 @@ Input (stack trace / NL question / screenshot)
         │
         ▼
 ┌─────────────────────────────────────┐
-│  Step 1: EXTRACT                    │
+│  Step 1: EXTRACT + INTENT DETECT    │
 │                                     │
 │  PythonStackExtractor — parse       │
 │    Python tracebacks                │
@@ -143,6 +147,9 @@ Input (stack trace / NL question / screenshot)
 │  ImageExtractor — vision LLM        │
 │    extracts UI elements, errors     │
 │  NL detection — no frames = query   │
+│  Rename detection — keywords +      │
+│    patterns (X→Y, rename X to Y)   │
+│    routes to exhaustive mode        │
 └──────────────┬──────────────────────┘
                ▼
 ┌─────────────────────────────────────┐
@@ -204,6 +211,64 @@ Input (stack trace / NL question / screenshot)
         confidence + explanations
 ```
 
+### Rename/Refactor Pipeline (Exhaustive Mode)
+
+When rename intent is detected (keywords like "rename", "refactor", "replace", or patterns like "X → Y"), the pipeline switches to exhaustive reference search mode. This prioritizes completeness (recall) over precision.
+
+```
+Rename query detected
+        │
+        ▼
+┌─────────────────────────────────────┐
+│  Step 1: DEFINITION LOOKUP          │
+│                                     │
+│  - Extract identifiers from query   │
+│    (UPPER_SNAKE_CASE, CamelCase,    │
+│     quoted strings)                 │
+│  - Exact name match across ALL      │
+│    namespaces (cross-repo)          │
+│  - Score: 1.0 (definition)         │
+└──────────────┬──────────────────────┘
+               ▼
+┌─────────────────────────────────────┐
+│  Step 2: REFERENCE SEARCH           │
+│  (cross-namespace)                  │
+│                                     │
+│  - Search 'references' keyword      │
+│    field (exact match, all repos)   │
+│  - BM25 body search for identifier  │
+│    string (catches inline usages)   │
+│  - Boost entities where identifier  │
+│    appears literally in body (0.95) │
+│  - Score: 0.9 (reference)          │
+└──────────────┬──────────────────────┘
+               ▼
+┌─────────────────────────────────────┐
+│  Step 3: IMPORT GRAPH TRAVERSAL     │
+│                                     │
+│  - Collect file paths of all        │
+│    definitions (score ≥ 0.95)       │
+│  - Find entities whose file_imports │
+│    include those defining files     │
+│  - Check if identifier appears in   │
+│    importer's body                  │
+│  - Score: 0.85 (transitive ref)    │
+└──────────────┬──────────────────────┘
+               ▼
+┌─────────────────────────────────────┐
+│  Step 4: GRAPH + LLM               │
+│                                     │
+│  - Merge, dedupe by entity ID      │
+│  - 1-hop graph propagation          │
+│  - Return ALL entities with         │
+│    score ≥ 0.5 (completeness)      │
+│  - LLM rerank for explanations     │
+└──────────────┬──────────────────────┘
+               ▼
+        All affected files/entities
+        across all namespaces
+```
+
 ## Data Model
 
 ### CodeEntity (core unit)
@@ -213,7 +278,7 @@ CodeEntity:
   id              string     SHA-based unique ID
   name            string     Function/method/class name
   full_name       string     package.ClassName.methodName
-  entity_type     enum       function | method | class
+  entity_type     enum       function | method | class | enum | field
   file_path       string     Relative path in codebase
   start_line      int
   end_line        int
@@ -226,6 +291,7 @@ CodeEntity:
   imports         string[]   Import statements in file
   base_classes    string[]   Parent classes
   file_imports    string[]   File paths this file imports from
+  references      string[]   Constants/fields/types referenced in body
   annotations     string[]   Decorators/annotations
   class_name      string     Enclosing class (if method)
   package         string     Package/module path
@@ -321,7 +387,11 @@ fault-localization/
 │   └── git_webhook.py              # GitHub/GitLab push auto-reindex
 │
 ├── scripts/
-│   └── local_index.py              # Local embed + remote push (testing)
+│   ├── local_index.py              # Local embed + remote push (testing)
+│   └── eval_precision.py           # Automated precision/recall evaluator
+│
+├── benchmarks/
+│   └── rename_hawkfire_plan.json   # Rename task benchmark (ground truth)
 │
 ├── static/
 │   └── index.html                  # Single-page UI
@@ -346,3 +416,9 @@ fault-localization/
 6. **Self-hosted OpenSearch** — Uses OpenSearch on Fargate instead of managed AWS OpenSearch Service to avoid subscription costs during prototyping. Same API, easy to migrate later.
 
 7. **Upsert semantics** — Re-indexing the same codebase updates existing entities by ID. No duplicates. Deleted code entities linger until namespace is manually purged.
+
+8. **Rename/refactor detection** — NL queries containing rename keywords or patterns (X→Y) trigger an exhaustive reference search mode that prioritizes recall over precision. Searches across all namespaces (cross-repo) using definition lookup, reference field matching, BM25 body search, and import graph traversal.
+
+9. **Static initializer indexing** — Java `static { }` blocks are extracted as pseudo-method entities (`<static_init_N>`). These blocks often contain map population code (e.g. `put(PlanName.X, "value")`) that is critical for rename/refactor completeness.
+
+10. **Reference tracking** — The `references` field on each entity captures UPPER_SNAKE_CASE constants and qualified field accesses found in the body. This enables exact-match reference search without relying on BM25 fuzzy matching, and feeds into graph propagation via `_resolve_reference_edges`.

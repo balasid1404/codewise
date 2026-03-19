@@ -53,6 +53,10 @@ class RelationshipResolver:
         self._resolve_file_imports(entities, by_file)
         logger.info(f"[TIMING] _resolve_file_imports: {time.monotonic()-t0:.3f}s")
 
+        t0 = time.monotonic()
+        self._resolve_reference_edges(entities, by_name)
+        logger.info(f"[TIMING] _resolve_reference_edges: {time.monotonic()-t0:.3f}s")
+
         logger.info(f"[TIMING] resolve() TOTAL: {time.monotonic()-t_total:.3f}s for {len(entities)} entities")
         return entities
 
@@ -293,3 +297,39 @@ class RelationshipResolver:
 
         for e in entities:
             e.file_imports = file_resolved.get(e.file_path, [])
+
+    def _resolve_reference_edges(
+        self,
+        entities: list[CodeEntity],
+        by_name: dict[str, list[CodeEntity]],
+    ) -> None:
+        """Gap 5: Resolve constant/field references to entity IDs.
+
+        For each entity that has 'references' (UPPER_SNAKE_CASE names found in body),
+        check if those names correspond to known entities. If so, add the referenced
+        entity's ID to resolved_calls so the graph ranker can traverse these edges.
+
+        This enables: if HAWKFIRE_ALL_DEVICES_ANNUAL_NON_DISCOUNTED is suspicious,
+        propagate to all entities that reference it.
+        """
+        total_refs = 0
+        resolved_refs = 0
+
+        for entity in entities:
+            if not entity.references:
+                continue
+
+            new_resolved = list(entity.resolved_calls)  # preserve existing
+            for ref_name in entity.references:
+                total_refs += 1
+                # Look up by exact name
+                candidates = by_name.get(ref_name)
+                if candidates:
+                    for c in candidates:
+                        if c.id != entity.id and c.id not in new_resolved:
+                            new_resolved.append(c.id)
+                            resolved_refs += 1
+
+            entity.resolved_calls = new_resolved
+
+        logger.info(f"[TIMING] _resolve_reference_edges: {total_refs} refs checked, {resolved_refs} resolved")

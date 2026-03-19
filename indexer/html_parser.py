@@ -8,6 +8,11 @@ import tree_sitter_html as tshtml
 from tree_sitter import Language, Parser
 from .entities import CodeEntity, EntityType
 
+# Pattern for UPPER_SNAKE_CASE constants referenced in code
+_CONST_REF_PATTERN = re.compile(r'\b([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)\b')
+# Pattern for qualified access: ClassName.CONSTANT_NAME
+_QUALIFIED_REF_PATTERN = re.compile(r'\b([A-Z][a-zA-Z0-9]*\.[A-Z][A-Z0-9_]+)\b')
+
 
 class HtmlParser:
     """Parse HTML files to extract page components and inline JS functions."""
@@ -46,6 +51,11 @@ class HtmlParser:
 
         # Find <script> elements and parse their JS content
         self._find_scripts(tree.root_node, source, file_path, entities, external_refs)
+
+        # Extract constant/field references for all entities with bodies
+        for ent in entities:
+            if ent.body:
+                ent.references = self._extract_references(ent.body, ent.name)
 
         return entities
 
@@ -179,3 +189,21 @@ class HtmlParser:
 
         for child in node.children:
             self._walk_for_refs(child, source, refs)
+
+    def _extract_references(self, body: str, own_name: str) -> list[str]:
+        """Extract UPPER_SNAKE_CASE constants and qualified references from body text."""
+        refs = set()
+
+        for m in _CONST_REF_PATTERN.finditer(body):
+            name = m.group(1)
+            if name != own_name and len(name) > 3:
+                refs.add(name)
+
+        for m in _QUALIFIED_REF_PATTERN.finditer(body):
+            full_ref = m.group(1)
+            parts = full_ref.split(".")
+            if len(parts) == 2:
+                refs.add(parts[1])
+                refs.add(full_ref)
+
+        return sorted(refs)

@@ -4,11 +4,13 @@ Core fault localization engine.
 Pipeline:
 1. Extract structured info from error (stack trace, image, or text)
 2. Find direct matches from stack frames
+2b. Detect rename/refactor intent → exhaustive reference mode
 3. Expand via call graph to find root causes
 4. Hybrid search (BM25 + semantic) for additional candidates
 5. LLM re-ranking with explanations
 """
 
+import re
 from pathlib import Path
 
 from extractors import PythonStackExtractor, JavaStackExtractor, ExtractedError
@@ -16,6 +18,34 @@ from indexer import CodeIndexer, CodeEntity
 from graph import CallGraph
 from retrieval import HybridRetriever
 from ranker import LLMRanker
+
+# Rename/refactor intent keywords
+_RENAME_KEYWORDS = {
+    "rename", "renaming", "refactor", "refactoring", "replace", "replacing",
+    "update", "updating", "change", "changing", "migrate", "migrating",
+    "move", "moving", "deprecate", "deprecating",
+}
+
+# Reference/usage search keywords — triggers exhaustive mode even without rename intent
+_REFERENCE_KEYWORDS = {
+    "find", "search", "locate", "where", "which", "usage", "usages",
+    "reference", "references", "referenced", "uses", "used", "using",
+    "occurrences", "instances", "affected", "impacts", "depends",
+    "callers", "consumers", "dependents", "files",
+}
+
+_RENAME_PATTERNS = [
+    re.compile(r'\brename\b.*\bto\b', re.IGNORECASE),
+    re.compile(r'\bchange\b.*\bto\b', re.IGNORECASE),
+    re.compile(r'\breplace\b.*\bwith\b', re.IGNORECASE),
+    re.compile(r'\bupdate\b.*\bto\b', re.IGNORECASE),
+    re.compile(r'\bmigrate\b.*\bto\b', re.IGNORECASE),
+    re.compile(r'\b(\w+)\s*(?:→|->|=>)\s*(\w+)', re.IGNORECASE),
+    re.compile(r'\b(?:find|search|locate)\b.*\b(?:usage|reference|occurrence)', re.IGNORECASE),
+    re.compile(r'\bwhere\b.*\b(?:used|referenced|called|defined)', re.IGNORECASE),
+    re.compile(r'\b(?:files?|classes?|methods?)\b.*\b(?:that|which)\b.*\b(?:use|reference|contain|import)', re.IGNORECASE),
+    re.compile(r'\b(?:all|every)\b.*\b(?:usage|reference|occurrence|place)', re.IGNORECASE),
+]
 
 
 class FaultLocalizer:
@@ -84,15 +114,32 @@ class FaultLocalizer:
 
         # 1. Extract structured info
         error = self._extract_error(error_text)
+        is_nl_query = error.exception_type in ("NLQuery", "Unknown") and not error.frames
+
+        # 1b. Detect rename/refactor intent for NL queries
+        if is_nl_query:
+            identifiers = self._extract_identifiers(error_text)
+            if self._detect_rename_intent(error_text) and identifiers:
+                return self._localize_rename(error_text, error, identifiers, top_k)
 
         # 2. Direct matches from stack frames
         direct = self._get_direct_candidates(error)
+
+        # 2b. For NL queries, extract identifiers and do exact-match lookups
+        if is_nl_query:
+            identifiers = self._extract_identifiers(error_text)
+            for ident in identifiers:
+                for entity in self.indexer.get_entities_by_name(ident):
+                    direct.append((entity, 1.0))
 
         # 3. Expand via call graph (find root causes)
         expanded = self._expand_via_graph(error)
 
         # 4. Hybrid search
-        query = f"{error.exception_type} {error.message} {' '.join(error.method_names)}"
+        if is_nl_query:
+            query = error_text.strip()
+        else:
+            query = f"{error.exception_type} {error.message} {' '.join(error.method_names)}"
         searched = self.retriever.search(query, top_k=20)
 
         # 5. Merge candidates
@@ -164,3 +211,80 @@ class FaultLocalizer:
 
         merged = sorted(scores.values(), key=lambda x: x[1], reverse=True)
         return merged
+
+    # ── Rename/refactor detection and exhaustive search ──────────
+
+    def _detect_rename_intent(self, text: str) -> bool:
+        """Detect if the query is a rename/refactor/reference-finding task."""
+        text_lower = text.lower()
+        words = set(re.findall(r'[a-z]+', text_lower))
+
+        identifiers = self._extract_identifiers(text)
+        if not identifiers:
+            return False
+
+        if words & _RENAME_KEYWORDS:
+            return True
+        if words & _REFERENCE_KEYWORDS:
+            return True
+        for pattern in _RENAME_PATTERNS:
+            if pattern.search(text):
+                return True
+        return False
+
+    def _extract_identifiers(self, text: str) -> list[str]:
+        """Extract code identifier-like tokens from natural language text."""
+        identifiers = set()
+
+        # UPPER_SNAKE_CASE
+        for m in re.finditer(r'\b([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)\b', text):
+            identifiers.add(m.group(1))
+        # CamelCase
+        for m in re.finditer(r'\b([A-Z][a-z]+(?:[A-Z][a-z0-9]*)+)\b', text):
+            identifiers.add(m.group(1))
+        # camelCase methods
+        for m in re.finditer(r'\b([a-z][a-z0-9]*(?:[A-Z][a-z0-9]*)+)\b', text):
+            if len(m.group(1)) > 6:
+                identifiers.add(m.group(1))
+        # Quoted identifiers
+        for m in re.finditer(r'["\']([A-Za-z_][A-Za-z0-9_]+)["\']', text):
+            identifiers.add(m.group(1))
+        # Dotted qualified names
+        for m in re.finditer(r'\b([a-z][a-z0-9]*(?:\.[a-z][a-z0-9]*){2,})\b', text):
+            identifiers.add(m.group(1))
+
+        return sorted(identifiers, key=len, reverse=True)[:20]
+
+    def _localize_rename(
+        self, error_text: str, error: ExtractedError,
+        identifiers: list[str], top_k: int
+    ) -> list[dict]:
+        """Exhaustive in-memory reference search for rename/refactor queries."""
+        all_candidates: list[tuple[CodeEntity, float]] = []
+        all_entities = list(self.indexer.entities.values())
+
+        for ident in identifiers:
+            # 1. Definition lookup (exact name match)
+            for entity in self.indexer.get_entities_by_name(ident):
+                all_candidates.append((entity, 1.0))
+
+            # 2. Reference field search
+            for entity in all_entities:
+                if entity.references and ident in entity.references:
+                    all_candidates.append((entity, 0.9))
+
+            # 3. BM25 body search — literal string match in body
+            for entity in all_entities:
+                if entity.body and ident in entity.body:
+                    if not any(e.id == entity.id for e, _ in all_candidates):
+                        all_candidates.append((entity, 0.95))
+
+        # 4. Merge and dedupe
+        merged = self._merge_candidates(all_candidates, [], [])
+
+        # Return all with score >= 0.5
+        effective_top_k = max(top_k, len([e for e, s in merged if s >= 0.5]))
+
+        if self.use_llm and self.ranker:
+            return self.ranker.rank_and_explain(error, merged, effective_top_k)
+        return [{"entity": e, "score": s, "reason": ""} for e, s in merged[:effective_top_k]]

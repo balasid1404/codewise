@@ -1,7 +1,13 @@
 import ast
 import hashlib
+import re
 from pathlib import Path
 from .entities import CodeEntity, EntityType
+
+# Pattern for UPPER_SNAKE_CASE constants referenced in code
+_CONST_REF_PATTERN = re.compile(r'\b([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)\b')
+# Pattern for qualified attribute access: ClassName.CONSTANT_NAME or module.CONSTANT
+_QUALIFIED_REF_PATTERN = re.compile(r'\b([A-Z][a-zA-Z0-9]*\.[A-Z][A-Z0-9_]+)\b')
 
 
 class PythonParser:
@@ -44,6 +50,11 @@ class PythonParser:
                 for ent in self._extract_assignment(node, file_path, lines, None):
                     ent.imports = file_imports
                     entities.append(ent)
+
+        # Extract constant/field references for all entities with bodies
+        for ent in entities:
+            if ent.body:
+                ent.references = self._extract_references(ent.body, ent.name)
 
         return entities
 
@@ -181,3 +192,21 @@ class PythonParser:
             ))
 
         return entities
+
+    def _extract_references(self, body: str, own_name: str) -> list[str]:
+        """Extract UPPER_SNAKE_CASE constants and qualified references from body text."""
+        refs = set()
+
+        for m in _CONST_REF_PATTERN.finditer(body):
+            name = m.group(1)
+            if name != own_name and len(name) > 3:
+                refs.add(name)
+
+        for m in _QUALIFIED_REF_PATTERN.finditer(body):
+            full_ref = m.group(1)
+            parts = full_ref.split(".")
+            if len(parts) == 2:
+                refs.add(parts[1])
+                refs.add(full_ref)
+
+        return sorted(refs)

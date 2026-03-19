@@ -1,0 +1,85 @@
+{
+  "id": "rename-hawkfire-annual-non-discounted",
+  "name": "Rename HAWKFIREALL_DEVICES_ANNUAL_NON_DISCOUNTED to HAWKFIRE_ALL_DEVICES_ANNUAL_DISCOUNTED",
+  "description": "Rename HAWKFIREALL_DEVICES_ANNUAL_NON_DISCOUNTED to HAWKFIRE_ALL_DEVICES_ANNUAL_DISCOUNTED with updated plan ID HF_AD_AND for the India marketplace by updating plan constants and mapping configurations across multiple files.",
+  "query": "I need to rename HAWKFIREALL_DEVICES_ANNUAL_NON_DISCOUNTED to HAWKFIRE_ALL_DEVICES_ANNUAL_DISCOUNTED with updated plan ID HF_AD_AND for the India marketplace by updating plan constants and mapping configurations across multiple files",
+  "repo_paths": [
+    "Dmtest",
+    "Dmtest2"
+  ],
+  "namespace": null,
+  "ground_truth": [
+    {
+      "file_path": "Dmtest/src/com/amazon/digital/music/subs/common/enums/PlanName.java",
+      "entities": [
+        {
+          "entity_name": "HAWKFIRE_ALL_DEVICES_ANNUAL_NON_DISCOUNTED",
+          "change_type": "rename",
+          "description": "Rename constant to HAWKFIRE_ALL_DEVICES_ANNUAL_DISCOUNTED and update its string value"
+        }
+      ]
+    },
+    {
+      "file_path": "Dmtest/src/com/amazon/digital/music/subs/common/testfake/PlanIdFake.java",
+      "entities": [
+        {
+          "entity_name": "HAWKFIRE_ALL_DEVICES_ANNUAL_NON_DISCOUNTED",
+          "change_type": "rename",
+          "description": "Rename constant, update longPlanId to HAWKFIRE_ALL_DEVICES_ANNUAL_DISCOUNTED, update shortPlanId from HF_AD_AND_ to HF_AD_AND"
+        }
+      ]
+    },
+    {
+      "file_path": "Dmtest2/src/com/amazon/digital/music/subs/portal/viewmodelgenerator/PlanSelectionViewModelGenerator.java",
+      "entities": [
+        {
+          "entity_name": "HAWKFIRE_ALL_DEVICES_ANNUAL_NON_DISCOUNTED",
+          "change_type": "update_mapping",
+          "description": "Update reference in PLAN_NAME_TO_ACTION_TYPE_MAP",
+          "context": "PLAN_NAME_TO_ACTION_TYPE_MAP"
+        },
+        {
+          "entity_name": "HAWKFIRE_ALL_DEVICES_ANNUAL_NON_DISCOUNTED",
+          "change_type": "update_mapping",
+          "description": "Update reference in PLAN_NAME_TO_DESCRIPTION_MAP",
+          "context": "PLAN_NAME_TO_DESCRIPTION_MAP"
+        },
+        {
+          "entity_name": "HAWKFIRE_ALL_DEVICES_ANNUAL_NON_DISCOUNTED",
+          "change_type": "update_mapping",
+          "description": "Update reference in PLAN_NAME_TO_PREFIX_STRING_ID_MAP",
+          "context": "PLAN_NAME_TO_PREFIX_STRING_ID_MAP"
+        },
+        {
+          "entity_name": "HAWKFIRE_ALL_DEVICES_ANNUAL_NON_DISCOUNTED",
+          "change_type": "update_mapping",
+          "description": "Update reference in PLAN_NAME_TO_PREFIX_STRING_MAP_FOR_UNDEFAULTED_UI",
+          "context": "PLAN_NAME_TO_PREFIX_STRING_MAP_FOR_UNDEFAULTED_UI"
+        },
+        {
+          "entity_name": "HAWKFIRE_ALL_DEVICES_ANNUAL_NON_DISCOUNTED",
+          "change_type": "update_mapping",
+          "description": "Update reference in PLAN_NAME_TO_PREFIX_STRING_ID_HD_MAP",
+          "context": "PLAN_NAME_TO_PREFIX_STRING_ID_HD_MAP"
+        },
+        {
+          "entity_name": "HAWKFIRE_ALL_DEVICES_ANNUAL_NON_DISCOUNTED",
+          "change_type": "update_mapping",
+          "description": "Update type string from allDevicesAnnualNonDiscounted to allDevicesAnnualDiscounted in PLAN_NAME_TO_TYPE_MAP",
+          "context": "PLAN_NAME_TO_TYPE_MAP"
+        }
+      ]
+    },
+    {
+      "file_path": "Dmtest2/src/com/amazon/digital/music/subs/portal/viewmodelgenerator/SignupViewModelGenerator.java",
+      "entities": [
+        {
+          "entity_name": "HAWKFIRE_ALL_DEVICES_ANNUAL_NON_DISCOUNTED",
+          "change_type": "update_mapping",
+          "description": "Update reference in planIdToSubscriptionTitle map",
+          "context": "planIdToSubscriptionTitle"
+        }
+      ]
+    }
+  ]
+}

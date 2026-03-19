@@ -1,11 +1,17 @@
 """JavaScript/TypeScript parser using tree-sitter AST."""
 
+import re
 import hashlib
 from pathlib import Path
 import tree_sitter_javascript as tsjs
 import tree_sitter_typescript as tsts
 from tree_sitter import Language, Parser
 from .entities import CodeEntity, EntityType
+
+# Pattern for UPPER_SNAKE_CASE constants referenced in code
+_CONST_REF_PATTERN = re.compile(r'\b([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)\b')
+# Pattern for qualified access: ClassName.CONSTANT_NAME
+_QUALIFIED_REF_PATTERN = re.compile(r'\b([A-Z][a-zA-Z0-9]*\.[A-Z][A-Z0-9_]+)\b')
 
 
 class JsTsParser:
@@ -34,6 +40,11 @@ class JsTsParser:
         # Attach imports to all entities from this file
         for ent in entities:
             ent.imports = file_imports
+
+        # Extract constant/field references for all entities with bodies
+        for ent in entities:
+            if ent.body:
+                ent.references = self._extract_references(ent.body, ent.name)
 
         return entities
 
@@ -207,3 +218,21 @@ class JsTsParser:
                         calls.add(prop.text.decode("utf-8"))
         for child in node.children:
             self._find_calls(child, source, calls)
+
+    def _extract_references(self, body: str, own_name: str) -> list[str]:
+        """Extract UPPER_SNAKE_CASE constants and qualified references from body text."""
+        refs = set()
+
+        for m in _CONST_REF_PATTERN.finditer(body):
+            name = m.group(1)
+            if name != own_name and len(name) > 3:
+                refs.add(name)
+
+        for m in _QUALIFIED_REF_PATTERN.finditer(body):
+            full_ref = m.group(1)
+            parts = full_ref.split(".")
+            if len(parts) == 2:
+                refs.add(parts[1])
+                refs.add(full_ref)
+
+        return sorted(refs)
