@@ -20,7 +20,7 @@ class LLMRanker:
 
         body = {
             "messages": [{"role": "user", "content": [{"text": prompt}]}],
-            "inferenceConfig": {"maxTokens": 2000}
+            "inferenceConfig": {"maxTokens": 4096}
         }
 
         response = self.client.converse(
@@ -34,8 +34,8 @@ class LLMRanker:
 
     def _build_nl_prompt(self, error: ExtractedError, candidates: list[tuple[CodeEntity, float]], top_k: int = 5) -> str:
         candidate_text = "\n\n".join([
-            f"[{i}] {e.full_name} ({e.file_path}:{e.start_line})\n```\n{e.signature}\n{e.body[:500]}...\n```"
-            for i, (e, _) in enumerate(candidates[:max(15, top_k + 5)])
+            f"[{i}] {e.full_name} ({e.file_path}:{e.start_line})\n```\n{e.signature}\n{e.body[:300]}...\n```"
+            for i, (e, _) in enumerate(candidates[:max(30, top_k * 2)])
         ])
 
         return f"""You are a code navigation expert. A developer is asking a question about their codebase. Rank the candidate code locations by relevance to their question.
@@ -46,7 +46,7 @@ DEVELOPER QUESTION:
 CANDIDATE CODE LOCATIONS:
 {candidate_text}
 
-Respond with JSON array of top {top_k} most relevant code locations:
+Respond with JSON array of ALL relevant code locations (up to {top_k}):
 [
   {{"index": 0, "confidence": 0.9, "reason": "brief explanation of why this code is relevant"}},
   ...
@@ -56,12 +56,13 @@ Consider:
 1. Which methods/classes directly implement the functionality the developer is asking about
 2. Entry points and core logic are more useful than utility helpers
 3. Prefer methods whose names and signatures clearly relate to the question
-4. Consider the file path — it often reveals the module's purpose"""
+4. Consider the file path — it often reveals the module's purpose
+5. Include results from ALL packages/namespaces, not just one"""
 
     def _build_prompt(self, error: ExtractedError, candidates: list[tuple[CodeEntity, float]], top_k: int = 5) -> str:
         candidate_text = "\n\n".join([
-            f"[{i}] {e.full_name} ({e.file_path}:{e.start_line})\n```\n{e.signature}\n{e.body[:500]}...\n```"
-            for i, (e, _) in enumerate(candidates[:max(15, top_k + 5)])
+            f"[{i}] {e.full_name} ({e.file_path}:{e.start_line})\n```\n{e.signature}\n{e.body[:300]}...\n```"
+            for i, (e, _) in enumerate(candidates[:max(30, top_k * 2)])
         ])
 
         return f"""You are a fault localization expert. Given a stack trace and candidate code locations, rank the most likely root causes.
@@ -94,7 +95,7 @@ Consider:
             rankings = json.loads(content[start:end])
 
             results = []
-            for r in rankings[:top_k]:
+            for r in rankings:
                 idx = r.get("index", 0)
                 if idx < len(candidates):
                     entity, score = candidates[idx]

@@ -353,29 +353,34 @@ class FaultLocalizerProd:
 
         Strategy:
         1. Find definitions of the identifier (exact name match)
-        2. Search references field across ALL namespaces (Gap 2: cross-namespace)
-        3. BM25 body search for the identifier string (Gap 1: reference search)
+        2. Search references (cross-namespace only if no namespace specified)
+        3. BM25 body search for the identifier string
         4. Search file_imports to find files importing the defining file
         5. Graph propagation to find transitive dependents
         6. Dedupe by file, return ALL affected files (not just top-k)
         """
+        # Respect user's namespace choice; only go cross-namespace when unset
+        search_ns = namespace  # None means cross-namespace
+
         all_candidates: list[tuple[CodeEntity, float]] = []
 
         for ident in identifiers:
-            # 1. Definition lookup (exact name match) — search all namespaces
-            definitions = self.store.get_by_name(ident, namespace=None)
+            # 1. Definition lookup (exact name match)
+            definitions = self.store.get_by_name(ident, namespace=search_ns)
             for entity in definitions:
                 all_candidates.append((entity, 1.0))
 
-            # 2. Gap 1+2: Reference search across all namespaces
-            ref_results = self.store.search_references_cross_namespace(ident, top_k=200)
+            # 2. Reference search
+            if search_ns is None:
+                ref_results = self.store.search_references_cross_namespace(ident, top_k=200)
+            else:
+                ref_results = self.store.search_bm25(f'"{ident}"', top_k=200, namespace=search_ns)
             for entity, score in ref_results:
                 all_candidates.append((entity, max(0.9, score)))
 
-            # 3. BM25 body search for the identifier (catches references in method bodies)
-            bm25_results = self.store.search_bm25(ident, top_k=100, namespace=None)
+            # 3. BM25 body search for the identifier
+            bm25_results = self.store.search_bm25(ident, top_k=100, namespace=search_ns)
             for entity, score in bm25_results:
-                # Boost if the identifier appears literally in the body
                 body = entity.body or ""
                 if ident in body:
                     all_candidates.append((entity, 0.95))
@@ -414,7 +419,7 @@ class FaultLocalizerProd:
         merged = self._merge_candidates(all_candidates, [])
 
         # 6. Graph propagation (lighter — just 1 hop for rename queries)
-        merged = self.graph_ranker.propagate(merged, namespace=None)
+        merged = self.graph_ranker.propagate(merged, namespace=search_ns)
 
         # For rename queries, return more results than usual top_k
         # since completeness matters more than precision
@@ -536,7 +541,7 @@ class FaultLocalizerProd:
                         "results": results,
                         "image_extracted": None,
                         "namespace_used": namespace,
-                        "namespace_source": "rename-cross-namespace",
+                        "namespace_source": "rename-cross-namespace" if not namespace else "user",
                     }
 
                 for ident in identifiers:
