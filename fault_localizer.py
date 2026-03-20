@@ -51,9 +51,8 @@ _RENAME_PATTERNS = [
 class FaultLocalizer:
     """Main fault localization engine."""
 
-    def __init__(self, codebase_path: str, use_llm: bool = True):
+    def __init__(self, codebase_path: str):
         self.codebase_path = Path(codebase_path)
-        self.use_llm = use_llm
 
         # Components
         self.python_extractor = PythonStackExtractor()
@@ -61,7 +60,7 @@ class FaultLocalizer:
         self.indexer = CodeIndexer()
         self.call_graph = CallGraph()
         self.retriever: HybridRetriever | None = None
-        self.ranker = LLMRanker() if use_llm else None
+        self.ranker = LLMRanker()
 
         self._indexed = False
 
@@ -101,7 +100,7 @@ class FaultLocalizer:
             raise RuntimeError("Call index() first")
 
         results = self.retriever.search(query, top_k=top_k)
-        return [{"entity": e, "score": s, "reason": ""} for e, s in results]
+        return [{"entity": e, "score": s, "confidence": s, "reason": ""} for e, s in results]
 
     def localize(self, error_text: str, top_k: int = 5) -> list[dict]:
         """
@@ -148,11 +147,8 @@ class FaultLocalizer:
         # 5b. File-level dedup before LLM — so the LLM ranks across unique files
         file_deduped = self._dedupe_by_file(all_candidates)
 
-        # 6. LLM re-rank or return by score
-        if self.use_llm and self.ranker:
-            return self.ranker.rank_and_explain(error, file_deduped, top_k)
-        
-        return [{"entity": e, "score": s, "reason": ""} for e, s in file_deduped[:top_k]]
+        # 6. LLM re-rank
+        return self.ranker.rank_and_explain(error, file_deduped, top_k)
 
     def _extract_error(self, error_text: str) -> ExtractedError:
         """Parse error text into structured format."""
@@ -315,9 +311,7 @@ class FaultLocalizer:
         # 6. For rename/refactor, use LLM on file-deduped candidates
         effective_top_k = max(top_k, len([e for e, s in file_deduped if s >= 0.5]))
 
-        if self.use_llm and self.ranker:
-            return self.ranker.rank_and_explain(error, file_deduped, effective_top_k)
-        return [{"entity": e, "score": s, "reason": ""} for e, s in file_deduped[:effective_top_k]]
+        return self.ranker.rank_and_explain(error, file_deduped, effective_top_k)
 
     def _is_pure_reference_search(self, text: str) -> bool:
         """Check if query is a pure reference/usage search (not a rename/refactor)."""

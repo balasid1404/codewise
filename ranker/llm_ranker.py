@@ -107,4 +107,4 @@ Consider:
             return results
         except (json.JSONDecodeError, KeyError):
             # Fallback: return top candidates by retrieval score
-            return [{"entity": e, "retrieval_score": s, "confidence": 0, "reason": ""} for e, s in candidates[:top_k]]
+            return [{"entity": e, "retrieval_score": s, "confidence": s, "reason": ""} for e, s in candidates[:top_k]]

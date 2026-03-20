@@ -73,7 +73,7 @@ class FaultLocalizerProd:
         self,
         opensearch_host: str = "localhost",
         opensearch_port: int = 9200,
-        use_llm: bool = True,
+        use_llm: bool = True,  # deprecated, LLM always enabled
         encoder_model: str = "microsoft/codebert-base",
         use_cross_encoder: bool = True,
     ):
@@ -83,10 +83,9 @@ class FaultLocalizerProd:
         self.java_extractor = JavaStackExtractor()
         self.image_extractor = ImageExtractor()
         self.ui_mapper = ScalableUIMapper(self.store.client)
-        self.ranker = LLMRanker() if use_llm else None
+        self.ranker = LLMRanker()
         self.graph_ranker = GraphRanker(self.store)
         self.cross_encoder = CrossEncoderRanker() if use_cross_encoder else None
-        self.use_llm = use_llm
 
     def index_codebase(self, path: str, workers: int = 4, namespace: str = None, progress_callback=None) -> int:
         """
@@ -292,9 +291,7 @@ class FaultLocalizerProd:
                     bm25_results = self.store.search_bm25(query, top_k=50, namespace=namespace)
                     merged = self._merge_candidates(merged, bm25_results)
                     merged = self.graph_ranker.propagate(merged, namespace=namespace)
-                    if self.use_llm and self.ranker:
-                        return self.ranker.rank_and_explain(error, merged, top_k)
-                    return [{"entity": e, "score": s, "confidence": s, "reason": ""} for e, s in merged[:top_k]]
+                    return self.ranker.rank_and_explain(error, merged, top_k)
 
         search_results = self.store.search_hybrid(query, query_embedding, top_k=50, namespace=namespace)
         all_candidates = self._merge_candidates(direct_candidates, search_results)
@@ -306,10 +303,7 @@ class FaultLocalizerProd:
         if self.cross_encoder and self.cross_encoder.available:
             all_candidates = self.cross_encoder.rerank(query, all_candidates, top_k=15)
 
-        if self.use_llm and self.ranker:
-            return self.ranker.rank_and_explain(error, all_candidates, top_k)
-        else:
-            return [{"entity": e, "score": s, "reason": ""} for e, s in all_candidates[:top_k]]
+        return self.ranker.rank_and_explain(error, all_candidates, top_k)
 
     # ── Gap 4: Rename intent detection ───────────────────────────
 
@@ -426,9 +420,7 @@ class FaultLocalizerProd:
         # since completeness matters more than precision
         effective_top_k = max(top_k, len([e for e, s in merged if s >= 0.5]))
 
-        if self.use_llm and self.ranker:
-            return self.ranker.rank_and_explain(error, merged, effective_top_k)
-        return [{"entity": e, "score": s, "confidence": s, "reason": ""} for e, s in merged[:effective_top_k]]
+        return self.ranker.rank_and_explain(error, merged, effective_top_k)
 
     def localize_from_image(self, image_path: str, top_k: int = 5, context: str = "", namespace: str = None) -> list[dict]:
         """Localize fault from a screenshot."""
@@ -477,22 +469,14 @@ class FaultLocalizerProd:
             all_candidates = self.cross_encoder.rerank(query, all_candidates, top_k=15)
 
         # 5. LLM re-rank with image context
-        if self.use_llm and self.ranker:
-            # Create pseudo-error for ranker
-            pseudo_error = ExtractedError(
-                exception_type="UI Bug",
-                message=f"{extracted.get('app_section', 'unknown')}: {extracted.get('error_message', 'visual bug')}",
-                frames=[],
-                raw_text=f"User action: {extracted.get('user_action', 'unknown')}\nUI elements: {extracted.get('ui_elements', [])}\nError: {extracted.get('error_message', 'none')}"
-            )
-            return self.ranker.rank_and_explain(pseudo_error, all_candidates, top_k)
-        else:
-            return [{
-                "entity": e,
-                "score": s,
-                "reason": "",
-                "image_context": extracted
-            } for e, s in all_candidates[:top_k]]
+        pseudo_error = ExtractedError(
+            exception_type="UI Bug",
+            message=f"{extracted.get('app_section', 'unknown')}: {extracted.get('error_message', 'visual bug')}",
+            frames=[],
+            raw_text=f"User action: {extracted.get('user_action', 'unknown')}\nUI elements: {extracted.get('ui_elements', [])}\nError: {extracted.get('error_message', 'none')}"
+        )
+        return self.ranker.rank_and_explain(pseudo_error, all_candidates, top_k)
+
     def localize_unified(self, error_text: str = "", image_path: str = "", top_k: int = 5, namespace: str = None) -> dict:
         """Unified localization: text + optional image. Returns results and image extraction data."""
         image_extracted = None
@@ -565,17 +549,13 @@ class FaultLocalizerProd:
                     bm25_results = self.store.search_bm25(text_query, top_k=50, namespace=namespace)
                     merged = self._merge_candidates(all_candidates, bm25_results)
                     merged = self.graph_ranker.propagate(merged, namespace=namespace)
-                    # Still use LLM for reason explanations if available
-                    if self.use_llm and self.ranker:
-                        pseudo_error = ExtractedError(
-                            exception_type="NLQuery",
-                            message=error_text[:300],
-                            frames=[],
-                            raw_text=error_text
-                        )
-                        results = self.ranker.rank_and_explain(pseudo_error, merged, top_k)
-                    else:
-                        results = [{"entity": e, "score": s, "confidence": s, "reason": ""} for e, s in merged[:top_k]]
+                    pseudo_error = ExtractedError(
+                        exception_type="NLQuery",
+                        message=error_text[:300],
+                        frames=[],
+                        raw_text=error_text
+                    )
+                    results = self.ranker.rank_and_explain(pseudo_error, merged, top_k)
                     return {
                         "results": results,
                         "image_extracted": None,
@@ -607,7 +587,7 @@ class FaultLocalizerProd:
             merged = self.cross_encoder.rerank(combined_query, merged, top_k=15)
 
         # LLM re-rank
-        if self.use_llm and self.ranker and merged:
+        if merged:
             context_parts = []
             if error_text:
                 context_parts.append(error_text[:500])
@@ -624,7 +604,7 @@ class FaultLocalizerProd:
             )
             results = self.ranker.rank_and_explain(pseudo_error, merged, top_k)
         else:
-            results = [{"entity": e, "score": s, "reason": ""} for e, s in merged[:top_k]]
+            results = []
 
         return {"results": results, "image_extracted": image_extracted, "namespace_used": namespace, "namespace_source": "auto-detected" if namespace else "none"}
 
