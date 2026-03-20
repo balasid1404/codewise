@@ -142,14 +142,17 @@ class FaultLocalizer:
             query = f"{error.exception_type} {error.message} {' '.join(error.method_names)}"
         searched = self.retriever.search(query, top_k=20)
 
-        # 5. Merge candidates
+        # 5. Merge candidates (entity-level dedup)
         all_candidates = self._merge_candidates(direct, expanded, searched)
+
+        # 5b. File-level dedup before LLM — so the LLM ranks across unique files
+        file_deduped = self._dedupe_by_file(all_candidates)
 
         # 6. LLM re-rank or return by score
         if self.use_llm and self.ranker:
-            return self.ranker.rank_and_explain(error, all_candidates, top_k)
+            return self.ranker.rank_and_explain(error, file_deduped, top_k)
         
-        return [{"entity": e, "score": s, "reason": ""} for e, s in all_candidates[:top_k]]
+        return [{"entity": e, "score": s, "reason": ""} for e, s in file_deduped[:top_k]]
 
     def _extract_error(self, error_text: str) -> ExtractedError:
         """Parse error text into structured format."""
@@ -202,7 +205,7 @@ class FaultLocalizer:
         expanded: list[tuple[CodeEntity, float]],
         searched: list[tuple[CodeEntity, float]]
     ) -> list[tuple[CodeEntity, float]]:
-        """Merge and dedupe candidates, keeping highest score."""
+        """Merge and dedupe candidates, keeping highest score per entity ID."""
         scores: dict[str, tuple[CodeEntity, float]] = {}
 
         for entity, score in direct + expanded + searched:
@@ -211,6 +214,17 @@ class FaultLocalizer:
 
         merged = sorted(scores.values(), key=lambda x: x[1], reverse=True)
         return merged
+
+    @staticmethod
+    def _dedupe_by_file(
+        candidates: list[tuple[CodeEntity, float]]
+    ) -> list[tuple[CodeEntity, float]]:
+        """Keep only the highest-scoring entity per file path."""
+        best: dict[str, tuple[CodeEntity, float]] = {}
+        for entity, score in candidates:
+            if entity.file_path not in best or score > best[entity.file_path][1]:
+                best[entity.file_path] = (entity, score)
+        return sorted(best.values(), key=lambda x: x[1], reverse=True)
 
     # ── Rename/refactor detection and exhaustive search ──────────
 
@@ -259,7 +273,12 @@ class FaultLocalizer:
         self, error_text: str, error: ExtractedError,
         identifiers: list[str], top_k: int
     ) -> list[dict]:
-        """Exhaustive in-memory reference search for rename/refactor queries."""
+        """Exhaustive in-memory reference search for rename/refactor queries.
+        
+        For pure reference searches (find all usages), skips LLM ranking and
+        returns all matching files directly. For rename/refactor queries,
+        uses LLM only on file-deduped candidates.
+        """
         all_candidates: list[tuple[CodeEntity, float]] = []
         all_entities = list(self.indexer.entities.values())
 
@@ -273,18 +292,41 @@ class FaultLocalizer:
                 if entity.references and ident in entity.references:
                     all_candidates.append((entity, 0.9))
 
-            # 3. BM25 body search — literal string match in body
+            # 3. Body search — literal string match in body
             for entity in all_entities:
                 if entity.body and ident in entity.body:
                     if not any(e.id == entity.id for e, _ in all_candidates):
                         all_candidates.append((entity, 0.95))
 
-        # 4. Merge and dedupe
+        # 4. Entity-level dedup, then file-level dedup
         merged = self._merge_candidates(all_candidates, [], [])
+        file_deduped = self._dedupe_by_file(merged)
 
-        # Return all with score >= 0.5
-        effective_top_k = max(top_k, len([e for e, s in merged if s >= 0.5]))
+        # 5. Detect if this is a pure reference search (no rename target)
+        is_pure_reference = self._is_pure_reference_search(error_text)
+
+        if is_pure_reference:
+            # Skip LLM — return all matching files sorted by score
+            return [
+                {"entity": e, "score": s, "confidence": s, "reason": f"References identifier in this file"}
+                for e, s in file_deduped if s >= 0.5
+            ]
+
+        # 6. For rename/refactor, use LLM on file-deduped candidates
+        effective_top_k = max(top_k, len([e for e, s in file_deduped if s >= 0.5]))
 
         if self.use_llm and self.ranker:
-            return self.ranker.rank_and_explain(error, merged, effective_top_k)
-        return [{"entity": e, "score": s, "reason": ""} for e, s in merged[:effective_top_k]]
+            return self.ranker.rank_and_explain(error, file_deduped, effective_top_k)
+        return [{"entity": e, "score": s, "reason": ""} for e, s in file_deduped[:effective_top_k]]
+
+    def _is_pure_reference_search(self, text: str) -> bool:
+        """Check if query is a pure reference/usage search (not a rename/refactor)."""
+        text_lower = text.lower()
+        words = set(re.findall(r'[a-z]+', text_lower))
+        # If it has rename-specific keywords, it's not a pure reference search
+        if words & _RENAME_KEYWORDS:
+            return False
+        # If it only has reference keywords, it's a pure reference search
+        if words & _REFERENCE_KEYWORDS:
+            return True
+        return False

@@ -318,22 +318,7 @@ async def localize_fault(request: LocalizeRequest):
     try:
         results = localizer.localize(request.error_text, request.top_k, namespace=request.namespace)
 
-        locations = []
-        for r in results:
-            entity = r["entity"]
-            confidence = r.get("confidence", r.get("score", 0))
-            locations.append(FaultLocation(
-                entity_id=entity.id,
-                name=entity.name,
-                full_name=entity.full_name,
-                file_path=entity.file_path,
-                start_line=entity.start_line,
-                end_line=entity.end_line,
-                signature=entity.signature,
-                confidence=confidence,
-                confidence_label=_get_confidence_label(confidence),
-                reason=r.get("reason", "")
-            ))
+        locations = _dedupe_by_file(results)
 
         # Cache results
         if cache and locations:
@@ -354,22 +339,7 @@ async def localize_from_image(request: ImageLocalizeRequest):
     try:
         results = localizer.localize_from_image(request.image_path, request.top_k)
 
-        locations = []
-        for r in results:
-            entity = r["entity"]
-            confidence = r.get("confidence", r.get("score", 0))
-            locations.append(FaultLocation(
-                entity_id=entity.id,
-                name=entity.name,
-                full_name=entity.full_name,
-                file_path=entity.file_path,
-                start_line=entity.start_line,
-                end_line=entity.end_line,
-                signature=entity.signature,
-                confidence=confidence,
-                confidence_label=_get_confidence_label(confidence),
-                reason=r.get("reason", "")
-            ))
+        locations = _dedupe_by_file(results)
 
         return LocalizeResponse(results=locations, cached=False)
 
@@ -407,22 +377,8 @@ async def localize_unified(
             namespace=namespace or None,
         )
 
-        locations = []
-        for r in result["results"]:
-            entity = r["entity"]
-            confidence = r.get("confidence", r.get("score", 0))
-            locations.append({
-                "entity_id": entity.id,
-                "name": entity.name,
-                "full_name": entity.full_name,
-                "file_path": entity.file_path,
-                "start_line": entity.start_line,
-                "end_line": entity.end_line,
-                "signature": entity.signature,
-                "confidence": confidence,
-                "confidence_label": _get_confidence_label(confidence),
-                "reason": r.get("reason", ""),
-            })
+        deduped = _dedupe_by_file(result["results"])
+        locations = [l.model_dump() for l in deduped]
 
         return {
             "results": locations,
@@ -457,22 +413,7 @@ async def localize_from_image_upload(file: UploadFile = File(...), top_k: int = 
         finally:
             os.unlink(tmp_path)
 
-        locations = []
-        for r in results:
-            entity = r["entity"]
-            confidence = r.get("confidence", r.get("score", 0))
-            locations.append(FaultLocation(
-                entity_id=entity.id,
-                name=entity.name,
-                full_name=entity.full_name,
-                file_path=entity.file_path,
-                start_line=entity.start_line,
-                end_line=entity.end_line,
-                signature=entity.signature,
-                confidence=confidence,
-                confidence_label=_get_confidence_label(confidence),
-                reason=r.get("reason", "")
-            ))
+        locations = _dedupe_by_file(results)
 
         return LocalizeResponse(results=locations, cached=False)
 
@@ -654,3 +595,26 @@ def _get_confidence_label(score: float) -> str:
     elif score >= 0.3:
         return "low"
     return "very_low"
+
+
+def _dedupe_by_file(results: list[dict]) -> list[FaultLocation]:
+    """Convert results to FaultLocations, keeping only the highest-confidence entity per file."""
+    seen_files: dict[str, FaultLocation] = {}
+    for r in results:
+        entity = r["entity"]
+        confidence = r.get("confidence", r.get("score", 0))
+        loc = FaultLocation(
+            entity_id=entity.id,
+            name=entity.name,
+            full_name=entity.full_name,
+            file_path=entity.file_path,
+            start_line=entity.start_line,
+            end_line=entity.end_line,
+            signature=entity.signature,
+            confidence=confidence,
+            confidence_label=_get_confidence_label(confidence),
+            reason=r.get("reason", ""),
+        )
+        if entity.file_path not in seen_files or confidence > seen_files[entity.file_path].confidence:
+            seen_files[entity.file_path] = loc
+    return sorted(seen_files.values(), key=lambda l: l.confidence, reverse=True)

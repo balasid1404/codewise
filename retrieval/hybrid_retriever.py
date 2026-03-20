@@ -39,7 +39,14 @@ class HybridRetriever:
                 scored.append((entity, combined))
 
         scored.sort(key=lambda x: x[1], reverse=True)
-        
+
+        # Dedupe by entity ID — keep highest score per entity
+        seen: dict[str, tuple[CodeEntity, float]] = {}
+        for entity, score in scored:
+            if entity.id not in seen or score > seen[entity.id][1]:
+                seen[entity.id] = (entity, score)
+        scored = sorted(seen.values(), key=lambda x: x[1], reverse=True)
+
         # Apply smart query-aware boosting
         scored = self.booster.rerank(query, scored[:top_k * 2])
         
