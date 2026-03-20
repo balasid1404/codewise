@@ -183,11 +183,23 @@ def main():
     parser.add_argument("--namespace", default=None, help="Namespace (default: directory name)")
     parser.add_argument("--workers", type=int, default=8, help="Parse workers")
     parser.add_argument("--model", default="microsoft/codebert-base", help="Embedding model")
+    parser.add_argument("--clean", action="store_true", help="Delete existing namespace before indexing")
     args = parser.parse_args()
 
     namespace = args.namespace or Path(args.codebase).name
 
     print(f"=== Local Index: {args.codebase} → {args.api} (namespace: {namespace}) ===\n")
+
+    # Clean existing namespace if requested
+    if args.clean:
+        print(f"Cleaning namespace '{namespace}'...")
+        try:
+            r = requests.delete(f"{args.api}/namespaces/{namespace}", timeout=30)
+            r.raise_for_status()
+            deleted = r.json().get("deleted", 0)
+            print(f"✓ Deleted {deleted} existing entities\n")
+        except Exception as e:
+            print(f"⚠ Clean failed: {e} (continuing anyway)\n")
 
     # Stage 1: Parse
     t0 = time.time()
