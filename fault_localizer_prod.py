@@ -883,9 +883,9 @@ class FaultLocalizerProd:
         direct: list[tuple[CodeEntity, float]],
         searched: list[tuple[CodeEntity, float]]
     ) -> list[tuple[CodeEntity, float]]:
+        # Step 1: Entity-level dedup (by id and name+signature+start_line)
         scores: dict[str, tuple[CodeEntity, float]] = {}
         for entity, score in direct + searched:
-            # Dedupe by id, and also by name+signature to catch copies in different paths
             key = entity.id
             sig_key = f"{entity.name}:{entity.signature}:{entity.start_line}"
             existing_by_sig = None
@@ -896,6 +896,14 @@ class FaultLocalizerProd:
             dedup_key = existing_by_sig or key
             if dedup_key not in scores or scores[dedup_key][1] < score:
                 scores[dedup_key] = (entity, score)
-        merged = list(scores.values())
+
+        # Step 2: File-level dedup — keep only the highest-scored entity per file
+        file_best: dict[str, tuple[CodeEntity, float]] = {}
+        for entity, score in scores.values():
+            fp = entity.file_path
+            if fp not in file_best or file_best[fp][1] < score:
+                file_best[fp] = (entity, score)
+
+        merged = list(file_best.values())
         merged.sort(key=lambda x: x[1], reverse=True)
         return merged
