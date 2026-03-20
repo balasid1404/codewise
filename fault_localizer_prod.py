@@ -415,10 +415,22 @@ class FaultLocalizerProd:
                 except Exception as e:
                     logger.debug(f"Import search failed: {e}")
 
-        # 5. Merge and dedupe
+        # 5. Hybrid search with full query text to catch broader references
+        hybrid_results = self.store.search_hybrid(query, query_embedding, top_k=100, namespace=search_ns)
+        for entity, score in hybrid_results:
+            # Check if any identifier appears in entity body or search text
+            text = (entity.body or "") + " " + (entity.name or "")
+            for ident in identifiers:
+                if ident in text:
+                    all_candidates.append((entity, max(0.8, score)))
+                    break
+            else:
+                all_candidates.append((entity, score * 0.4))
+
+        # 6. Merge and dedupe
         merged = self._merge_candidates(all_candidates, [])
 
-        # 6. Graph propagation (lighter — just 1 hop for rename queries)
+        # 7. Graph propagation (lighter — just 1 hop for rename queries)
         merged = self.graph_ranker.propagate(merged, namespace=search_ns)
 
         # For rename queries, return more results than usual top_k
