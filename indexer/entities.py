@@ -66,6 +66,9 @@ class CodeEntity:
         # For fields/enums, include body (the value IS the identity)
         if self.entity_type.value in ("field", "enum") and self.body:
             parts.append(self.body[:500])
+        # For methods/functions, include body snippet for BM25 discoverability
+        elif self.body:
+            parts.append(self.body[:300])
         # Include referenced constants/fields for BM25 discoverability
         if self.references:
             parts.extend(self.references)
